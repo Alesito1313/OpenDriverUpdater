@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>OpenDriverUpdater</AssemblyName>
+    <RootNamespace>OpenDriverUpdater</RootNamespace>
+    <Version>0.1.0</Version>
+    <Product>OpenDriverUpdater</Product>
+    <Description>Actualizador de drivers de código abierto para Windows</Description>
+    <!-- Permite compilar también desde Linux/macOS -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- No recortar: la interoperabilidad COM dinámica con Windows Update lo necesita -->
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>
