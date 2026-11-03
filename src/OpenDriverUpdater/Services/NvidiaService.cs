@@ -129,7 +129,11 @@ public static class NvidiaService
     private static DateTime? ParseDate(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return null;
-        // Ej.: "Tue Oct 01, 2024" o "2024-10-01"
+        // Formato actual de NVIDIA: "2026-10-21T00:00:00+0000"
+        var iso = Regex.Match(s, @"^(\d{4}-\d{2}-\d{2})");
+        if (iso.Success && DateTime.TryParseExact(iso.Groups[1].Value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var di))
+            return di;
+        // Formatos antiguos: "Tue Oct 01, 2024"
         var clean = Regex.Replace(s, @"^[A-Za-z]{3}\s+", "");
         foreach (var fmt in new[] { "MMM dd, yyyy", "MMM d, yyyy", "yyyy-MM-dd", "M/d/yyyy" })
             if (DateTime.TryParseExact(clean, fmt, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var d)) return d;
