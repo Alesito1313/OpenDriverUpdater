@@ -20,7 +20,7 @@ public sealed record CatalogEntry(
 public sealed partial class CatalogService
 {
     private const string BaseUrl = "https://www.catalog.update.microsoft.com/";
-    private const int MaxPages = 5; // 25 resultados por página
+    private const int MaxPages = 3; // 25 resultados por página, ordenados del más nuevo al más viejo
 
     private readonly ConcurrentDictionary<string, Lazy<Task<List<CatalogEntry>>>> _cache =
         new(StringComparer.OrdinalIgnoreCase);
@@ -35,28 +35,19 @@ public sealed partial class CatalogService
         var results = new List<CatalogEntry>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        string html = await Http.GetStringAsync(url, ct);
-        for (int page = 1; ; page++)
+        // El catálogo ordena por fecha (lo más nuevo primero) y pagina con "&p=N" (0, 1, 2...)
+        for (int page = 0; page < MaxPages; page++)
         {
-            int added = 0;
+            string html = await Http.GetStringAsync(page == 0 ? url : $"{url}&p={page}", ct);
+            int found = 0, added = 0;
             foreach (var e in ParseResults(html))
+            {
+                found++;
                 if (seen.Add(e.UpdateId)) { results.Add(e); added++; }
+            }
 
             bool hasNext = html.Contains("ctl00_catalogBody_nextPageLinkText", StringComparison.Ordinal);
-            if (added == 0 || !hasNext || page >= MaxPages) break;
-
-            // Página siguiente: postback de ASP.NET
-            var form = new Dictionary<string, string>
-            {
-                ["__EVENTTARGET"] = "ctl00$catalogBody$nextPageLinkText",
-                ["__EVENTARGUMENT"] = "",
-            };
-            foreach (var name in new[] { "__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION" })
-            {
-                var v = HiddenField(html, name);
-                if (v is not null) form[name] = v;
-            }
-            html = await Http.PostFormAsync(url, form, ct);
+            if (added == 0 || found < 25 || !hasNext) break;
         }
         return results;
     }
@@ -174,9 +165,11 @@ public sealed partial class CatalogService
             return false;
 
         if (e.Products.Length == 0) return true;
-        foreach (var raw in e.Products.Split(','))
+        // Ej.: "Windows 11 Client,  version 24H2 and later,  Servicing Drivers, Windows 10 and later drivers"
+        // Cada producto empieza por "Windows" y lleva comas dentro, así que se separa antes de cada "Windows".
+        foreach (var raw in Regex.Split(e.Products, @",\s*(?=Windows\b)", RegexOptions.IgnoreCase))
         {
-            var p = raw.Trim().ToLowerInvariant();
+            var p = SpaceRegex().Replace(raw, " ").Trim().ToLowerInvariant();
             bool is11 = p.Contains("windows 11");
             bool is10 = p.Contains("windows 10");
             if (!is10 && !is11) continue;
@@ -193,9 +186,14 @@ public sealed partial class CatalogService
         return false;
     }
 
-    /// <summary>"Realtek Semiconductor Corp. - Net - 10.68.524.2023" → "Realtek Semiconductor Corp."</summary>
+    /// <summary>
+    /// Fabricante a partir del título. El catálogo usa dos formatos:
+    /// "Realtek Driver Update (10.79.50.1003)" y "Realtek Semiconductor Corp. - Net - 10.68.524.2023".
+    /// </summary>
     public static string VendorFromTitle(string title)
     {
+        var m = Regex.Match(title, @"^(.+?)\s+(?:\w+\s+)?(?:Driver|Extension|Software Component|Firmware)\b.*Update", RegexOptions.IgnoreCase);
+        if (m.Success) return m.Groups[1].Value.Trim();
         var i = title.IndexOf(" - ", StringComparison.Ordinal);
         return i > 0 ? title[..i].Trim() : "";
     }

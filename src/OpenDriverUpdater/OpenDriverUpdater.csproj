@@ -9,7 +9,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>OpenDriverUpdater</AssemblyName>
     <RootNamespace>OpenDriverUpdater</RootNamespace>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Product>OpenDriverUpdater</Product>
     <Description>Actualizador de drivers de código abierto para Windows</Description>
     <!-- Permite compilar también desde Linux/macOS -->
