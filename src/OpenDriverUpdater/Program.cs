@@ -14,9 +14,15 @@ namespace OpenDriverUpdater
 
         public static string Version => Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
 
+        // --selftest <archivo>: abre la app, analiza y guarda el resultado (lo usa la compilacion de GitHub)
+        public static string SelfTestFile;
+
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
+            int i = Array.IndexOf(args, "--selftest");
+            if (i >= 0) SelfTestFile = i + 1 < args.Length ? args[i + 1] : "selftest.json";
+
             // las dll de WebView2 van embebidas en el exe (ver .csproj)
             AppDomain.CurrentDomain.AssemblyResolve += LoadEmbeddedAssembly;
 

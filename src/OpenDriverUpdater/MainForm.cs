@@ -29,6 +29,7 @@ namespace OpenDriverUpdater
         readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
         List<Row> rows = new List<Row>();
         bool busy, started;
+        readonly List<string> jsErrors = new List<string>();
 
         public MainForm()
         {
@@ -43,6 +44,7 @@ namespace OpenDriverUpdater
             Controls.Add(web);
 
             Load += async (s, e) => await StartWebView();
+            if (Program.SelfTestFile != null) StartSelfTestTimeout();
             FormClosing += OnClosing;
             SystemEvents.UserPreferenceChanged += OnThemeChanged;
         }
@@ -118,6 +120,10 @@ namespace OpenDriverUpdater
                 };
                 core.Navigate("https://" + Host + "/index.html");
             }
+            catch (Exception ex) when (Program.SelfTestFile != null)
+            {
+                WriteSelfTest(false, 0, ex.ToString());
+            }
             catch (WebView2RuntimeNotFoundException)
             {
                 if (MessageBox.Show(this, Lang.Get("noWebView"), "OpenDriverUpdater", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
@@ -182,6 +188,12 @@ namespace OpenDriverUpdater
                     case "restart":
                         SystemTools.Restart();
                         break;
+                    case "jsError":
+                        jsErrors.Add(msg["message"] as string);
+                        break;
+                    case "rendered":
+                        if (Program.SelfTestFile != null) FinishSelfTest(Convert.ToInt32(msg["count"]));
+                        break;
                 }
             }
             catch (Exception ex)
@@ -204,6 +216,7 @@ namespace OpenDriverUpdater
             }
             catch (Exception ex)
             {
+                if (Program.SelfTestFile != null) { WriteSelfTest(false, 0, ex.ToString()); return; }
                 Send(new { type = "scanError", message = Lang.Get("scanFailed", ex.Message) });
             }
             finally
@@ -320,6 +333,42 @@ namespace OpenDriverUpdater
         {
             if (url == null || !(url.StartsWith("https://") || url.StartsWith("http://"))) return;
             try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
+        }
+
+        // prueba automatica
+
+        void StartSelfTestTimeout()
+        {
+            var timer = new System.Windows.Forms.Timer { Interval = 6 * 60 * 1000 };
+            timer.Tick += (s, e) => { timer.Stop(); WriteSelfTest(false, 0, "timeout"); };
+            timer.Start();
+        }
+
+        void FinishSelfTest(int renderedRows)
+        {
+            bool ok = rows.Count > 0 && renderedRows > 0 && jsErrors.Count == 0;
+            WriteSelfTest(ok, renderedRows, null);
+        }
+
+        void WriteSelfTest(bool ok, int renderedRows, string error)
+        {
+            var result = new Dictionary<string, object>
+            {
+                ["ok"] = ok,
+                ["error"] = error,
+                ["devices"] = rows.Count,
+                ["renderedRows"] = renderedRows,
+                ["updates"] = rows.Count(r => r.CanUpdate),
+                ["upToDate"] = rows.Count(r => r.Status == Status.UpToDate),
+                ["withCatalogResults"] = rows.Count(r => r.Candidates.Any(c => c.Source == Source.Catalog)),
+                ["windowsUpdateError"] = engine.WuError,
+                ["catalogErrors"] = engine.CatalogErrors,
+                ["jsErrors"] = jsErrors,
+                ["sample"] = rows.Take(15).Select(r => r.Device.Name + " | " + r.Device.Version + " -> " + (r.Latest?.Version ?? "-") + " | " + r.StatusKey).ToList(),
+            };
+            File.WriteAllText(Program.SelfTestFile, json.Serialize(result));
+            busy = false;
+            Close();
         }
 
         void OnClosing(object sender, FormClosingEventArgs e)

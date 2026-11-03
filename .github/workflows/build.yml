@@ -19,6 +19,16 @@ jobs:
       - name: Compilar
         run: dotnet build src/OpenDriverUpdater/OpenDriverUpdater.csproj -c Release -o out
 
+      # abre el programa de verdad en la maquina de GitHub, analiza y comprueba que la lista sale
+      - name: Prueba
+        shell: pwsh
+        run: |
+          $out = Join-Path $pwd 'selftest.json'
+          $p = Start-Process out\OpenDriverUpdater.exe -ArgumentList '--selftest', "`"$out`"" -PassThru
+          if (-not $p.WaitForExit(420000)) { $p.Kill(); throw 'la prueba no termino' }
+          Get-Content $out
+          if (-not (Get-Content $out | ConvertFrom-Json).ok) { throw 'la prueba fallo' }
+
       - name: Firmar
         if: env.HAS_CERT == 'true'
         shell: pwsh

@@ -10,6 +10,7 @@
   const webview = window.chrome && window.chrome.webview;
   const send = (msg) => webview && webview.postMessage(msg);
   if (webview) webview.addEventListener('message', (e) => handle(e.data));
+  window.addEventListener('error', (e) => send({ type: 'jsError', message: `${e.message} (${e.lineno}:${e.colno})` }));
 
   const state = {
     lang: 'en',
@@ -808,6 +809,7 @@
 
     if (state.filter !== 'all' && state.filter !== 'updates') setFilter('all', false);
     renderList(true);
+    send({ type: 'rendered', count: list.querySelectorAll('.row').length });
     requestAnimationFrame(() => placeThumb(false));
     setToolbarEnabled(true);
     setTimeout(() => { scanShow.to(0); updateActionBar(); }, 260);
