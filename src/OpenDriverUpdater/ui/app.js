@@ -1,20 +1,18 @@
-/*
- * app.js — Interfaz de OpenDriverUpdater.
- * Habla con el motor en C# mediante WebView2 (chrome.webview.postMessage / evento "message").
- */
+// Interfaz de OpenDriverUpdater.
+// Se comunica con la parte de C# (MainForm.cs) por chrome.webview: postMessage hacia alla
+// y el evento "message" para lo que llega.
 (function () {
   'use strict';
   const { Spring, springEasing, rubberBand, VelocityTracker } = window.Motion;
   const $ = (sel, root = document) => root.querySelector(sel);
   const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
 
-  // ───────────────────────── Puente con C# ─────────────────────────
   const webview = window.chrome && window.chrome.webview;
   const send = (msg) => webview && webview.postMessage(msg);
   if (webview) webview.addEventListener('message', (e) => handle(e.data));
 
-  // ───────────────────────── Estado ─────────────────────────
   const state = {
+    lang: 'en',
     rows: [],
     byId: new Map(),
     filter: 'all',
@@ -25,10 +23,45 @@
     restorePoint: true,
     warnings: [],
     install: null,
+    lastProgress: null,
   };
 
-  // Curvas de muelle reales para las transiciones CSS (respuesta al soltar, casillas, interruptores)
-  (function installSpringEasings() {
+  // idioma
+
+  function t(key, vars) {
+    const dict = window.STRINGS[state.lang] || window.STRINGS.en;
+    let s = dict[key] != null ? dict[key] : (window.STRINGS.en[key] != null ? window.STRINGS.en[key] : key);
+    if (vars) for (const k in vars) s = s.split('{' + k + '}').join(vars[k]);
+    return s;
+  }
+  const plural = (n, one, many) => t(n === 1 ? one : many, { n });
+  const sourceName = (key) => (key ? t('src.' + key) : '');
+
+  function applyStaticTexts() {
+    document.documentElement.lang = state.lang;
+    document.querySelectorAll('[data-t]').forEach((el) => { el.textContent = t(el.dataset.t); });
+    document.querySelectorAll('[data-t-placeholder]').forEach((el) => { el.placeholder = t(el.dataset.tPlaceholder); });
+    document.querySelectorAll('[data-t-label]').forEach((el) => { el.setAttribute('aria-label', t(el.dataset.tLabel)); });
+    const btn = $('#lang-btn');
+    btn.innerHTML = `<span class="flag">${window.FLAGS[state.lang]}</span>`;
+    btn.setAttribute('aria-label', `${t('lang')}: ${window.LANGS.find((l) => l.code === state.lang).name}`);
+  }
+
+  function setLang(code, notify) {
+    if (!window.STRINGS[code]) return;
+    state.lang = code;
+    applyStaticTexts();
+    if (notify) send({ type: 'lang', lang: code });
+    // volver a pintar lo que tiene texto generado
+    if (state.scanning) { if (state.lastProgress) onScanProgress(state.lastProgress); }
+    else if (state.rows.length) { updateCounts(); updateSubtitle(); renderList(false); }
+    updateActionBar();
+    if (sheet.open && sheet.redraw) sheet.redraw();
+    requestAnimationFrame(() => placeThumb(false)); // los textos cambian de ancho
+  }
+
+  // curvas de muelle para las transiciones CSS
+  (function () {
     const root = document.documentElement.style;
     const smooth = springEasing(0.32, 0.9);
     const bouncy = springEasing(0.36, 0.68);
@@ -38,7 +71,6 @@
     root.setProperty('--spring-bouncy-duration', Math.min(bouncy.duration, 900) + 'ms');
   })();
 
-  // ───────────────────────── Iconos ─────────────────────────
   const ICON = {
     check: '<svg viewBox="0 0 20 20"><path d="m4.5 10.5 3.5 3.5 7.5-8"/></svg>',
     arrow: '<svg class="arrow" viewBox="0 0 20 20"><path d="M4 10h12m-4-4 4 4-4 4"/></svg>',
@@ -51,17 +83,19 @@
     search: '<svg viewBox="0 0 48 48"><circle cx="21" cy="21" r="12"/><path d="m30 30 9 9"/></svg>',
     done: '<svg viewBox="0 0 20 20"><path d="m4.5 10.5 3.5 3.5 7.5-8"/></svg>',
     warn: '<svg viewBox="0 0 20 20"><path d="M10 6.5v4.5m0 2.8v.01"/></svg>',
-    kinds: {
-      display: '<rect x="3" y="4" width="14" height="9.5" rx="1.5"/><path d="M7.5 16.5h5M10 13.5v3"/>',
-      net: '<path d="M2.8 8.2a10.2 10.2 0 0 1 14.4 0M5.3 10.8a6.6 6.6 0 0 1 9.4 0M7.8 13.4a3 3 0 0 1 4.4 0"/><path d="M10 16.2h.01"/>',
-      audio: '<path d="M3.5 8v4h3l4 3.5v-11l-4 3.5h-3Z"/><path d="M13.5 7.5a3.5 3.5 0 0 1 0 5M15.8 5.4a6.5 6.5 0 0 1 0 9.2"/>',
-      bluetooth: '<path d="m6 6.5 8 7-4 3.5V3l4 3.5-8 7"/>',
-      input: '<rect x="6" y="2.5" width="8" height="15" rx="4"/><path d="M10 2.5v4.5"/>',
-      storage: '<ellipse cx="10" cy="5.5" rx="6" ry="2.5"/><path d="M4 5.5v9c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5v-9M4 10c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5"/>',
-      camera: '<rect x="2.5" y="6" width="11" height="8" rx="1.6"/><path d="m13.5 9 4-2.2v6.4l-4-2.2"/>',
-      usb: '<path d="M10 2.5v12M10 17.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM10 11l-4-2.5V6M10 9l4-2.5V5"/><path d="M5 5h2M13 3.5h2v2h-2z"/>',
-      chip: '<rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M8 3v2.5M12 3v2.5M8 14.5V17M12 14.5V17M3 8h2.5M3 12h2.5M14.5 8H17M14.5 12H17"/>',
-    },
+    tick: '<svg class="tick" viewBox="0 0 20 20"><path d="m4.5 10.5 3.5 3.5 7.5-8"/></svg>',
+  };
+
+  const KIND_ICONS = {
+    display: '<rect x="3" y="4" width="14" height="9.5" rx="1.5"/><path d="M7.5 16.5h5M10 13.5v3"/>',
+    net: '<path d="M2.8 8.2a10.2 10.2 0 0 1 14.4 0M5.3 10.8a6.6 6.6 0 0 1 9.4 0M7.8 13.4a3 3 0 0 1 4.4 0"/><path d="M10 16.2h.01"/>',
+    audio: '<path d="M3.5 8v4h3l4 3.5v-11l-4 3.5h-3Z"/><path d="M13.5 7.5a3.5 3.5 0 0 1 0 5M15.8 5.4a6.5 6.5 0 0 1 0 9.2"/>',
+    bluetooth: '<path d="m6 6.5 8 7-4 3.5V3l4 3.5-8 7"/>',
+    input: '<rect x="6" y="2.5" width="8" height="15" rx="4"/><path d="M10 2.5v4.5"/>',
+    storage: '<ellipse cx="10" cy="5.5" rx="6" ry="2.5"/><path d="M4 5.5v9c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5v-9M4 10c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5"/>',
+    camera: '<rect x="2.5" y="6" width="11" height="8" rx="1.6"/><path d="m13.5 9 4-2.2v6.4l-4-2.2"/>',
+    usb: '<path d="M10 2.5v12M10 17.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM10 11l-4-2.5V6M10 9l4-2.5V5"/><path d="M5 5h2M13 3.5h2v2h-2z"/>',
+    chip: '<rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M8 3v2.5M12 3v2.5M8 14.5V17M12 14.5V17M3 8h2.5M3 12h2.5M14.5 8H17M14.5 12H17"/>',
   };
 
   function kindOf(cls) {
@@ -71,26 +105,31 @@
     if (c === 'media' || c.includes('audio')) return 'audio';
     if (c === 'bluetooth') return 'bluetooth';
     if (c === 'hidclass' || c === 'keyboard' || c === 'mouse') return 'input';
-    if (c === 'diskdrive' || c === 'scsiadapter' || c === 'hdc' || c === 'volume' || c === 'cdrom') return 'storage';
+    if (['diskdrive', 'scsiadapter', 'hdc', 'volume', 'cdrom'].includes(c)) return 'storage';
     if (c === 'camera' || c === 'image') return 'camera';
     if (c === 'usb' || c === 'usbdevice') return 'usb';
     return 'chip';
   }
-  const glyph = (cls) => `<span class="glyph" aria-hidden="true"><svg viewBox="0 0 20 20">${ICON.kinds[kindOf(cls)]}</svg></span>`;
+  const glyph = (cls) => `<span class="glyph"><svg viewBox="0 0 20 20">${KIND_ICONS[kindOf(cls)]}</svg></span>`;
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   function formatSize(bytes) {
     if (!bytes) return '';
     const mb = bytes / (1024 * 1024);
-    if (mb >= 1024) return (mb / 1024).toFixed(1).replace('.', ',') + ' GB';
-    if (mb >= 1) return mb.toFixed(mb < 10 ? 1 : 0).replace('.', ',') + ' MB';
+    const dec = state.lang === 'en' ? '.' : ',';
+    if (mb >= 1024) return (mb / 1024).toFixed(1).replace('.', dec) + ' GB';
+    if (mb >= 1) return mb.toFixed(mb < 10 ? 1 : 0).replace('.', dec) + ' MB';
     return Math.max(1, Math.round(bytes / 1024)) + ' KB';
   }
-  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
-  const PILL_SHORT = { update: 'Actualización', missing: 'Sin driver', vendor: 'Del fabricante', ok: 'Al día', none: 'Sin datos', builtin: 'Integrado' };
-  const pillLabel = (r) => PILL_SHORT[r.status] || r.statusText;
+  function statusText(r) {
+    let s;
+    if (r.status === 'missing') s = t(r.canUpdate ? 'status.missing' : 'status.missingNone');
+    else s = t('status.' + r.status);
+    if (r.canUpdate && r.match === 'generic') s += t('status.generic');
+    return s;
+  }
 
   function pillClass(r) {
     if (r.canUpdate) return { update: 'update', missing: 'missing', vendor: 'vendor' }[r.status] || 'update';
@@ -99,7 +138,10 @@
     return 'none';
   }
 
-  // ───────────────────────── Respuesta inmediata al pulsar ─────────────────────────
+  const installedText = (r) => r.hasDriver ? r.installedVersion + (r.nvidiaVersion ? ` (${r.nvidiaVersion})` : '') : t('d.noDriver');
+
+  // respuesta al pulsar: la clase se pone en el mismo pointerdown, sin esperar a nada
+
   let pressed = null;
   function pressStart(el) {
     if (!el || el.disabled) return;
@@ -111,14 +153,11 @@
     if (pressed) pressed.classList.remove('is-pressed');
     pressed = null;
   }
-  document.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    pressStart(e.target.closest('[data-press]'));
-  }, true);
+  document.addEventListener('pointerdown', (e) => { if (e.button === 0) pressStart(e.target.closest('[data-press]')); }, true);
   document.addEventListener('pointerup', pressEnd, true);
   document.addEventListener('pointercancel', pressEnd, true);
   document.addEventListener('pointermove', (e) => {
-    // Arrastrar fuera del control cancela la pulsación, como en iOS/macOS
+    // si arrastras fuera del boton se cancela, como en macOS
     if (pressed && e.buttons && !pressed.contains(document.elementFromPoint(e.clientX, e.clientY))) pressEnd();
   }, true);
   window.addEventListener('blur', pressEnd);
@@ -127,18 +166,74 @@
   });
   document.addEventListener('keyup', pressEnd);
 
-  // ───────────────────────── Barra superior ─────────────────────────
+  // selector de idioma
+
+  const langMenu = $('#lang-menu');
+  const langBtn = $('#lang-btn');
+  const menuAnim = new Spring({
+    response: 0.3, dampingFraction: 0.82, precision: 0.002,
+    onUpdate: (v) => {
+      langMenu.style.opacity = String(clamp(v, 0, 1));
+      langMenu.style.transform = `scale(${0.92 + 0.08 * v})`;
+    },
+    onRest: (v) => { if (v === 0) langMenu.hidden = true; },
+  });
+  let menuOpen = false;
+
+  function buildLangMenu() {
+    langMenu.innerHTML = `<div class="lang-menu-title">${esc(t('lang'))}</div>` + window.LANGS.map((l) =>
+      `<button class="lang-item" role="menuitemradio" aria-checked="${l.code === state.lang}" data-lang="${l.code}" data-press>
+        <span class="flag">${window.FLAGS[l.code]}</span><span class="name">${esc(l.name)}</span>${ICON.tick}
+      </button>`).join('');
+  }
+  function openLangMenu() {
+    buildLangMenu();
+    menuOpen = true;
+    langMenu.hidden = false;
+    langBtn.setAttribute('aria-expanded', 'true');
+    menuAnim.to(1);
+    const current = langMenu.querySelector('[aria-checked="true"]');
+    current && current.focus({ preventScroll: true });
+  }
+  function closeLangMenu(focusBtn) {
+    if (!menuOpen) return;
+    menuOpen = false;
+    langBtn.setAttribute('aria-expanded', 'false');
+    menuAnim.to(0); // si estaba abriendose se da la vuelta desde donde este
+    if (focusBtn) langBtn.focus({ preventScroll: true });
+  }
+  langBtn.addEventListener('pointerdown', (e) => { if (e.button === 0) { e.preventDefault(); menuOpen ? closeLangMenu() : openLangMenu(); } });
+  langBtn.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') { e.preventDefault(); openLangMenu(); } });
+  langMenu.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-lang]');
+    if (!item) return;
+    setLang(item.dataset.lang, true);
+    langMenu.querySelectorAll('[data-lang]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.lang === state.lang)));
+    closeLangMenu(true);
+  });
+  langMenu.addEventListener('keydown', (e) => {
+    const items = [...langMenu.querySelectorAll('[data-lang]')];
+    const i = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      items[clamp(i + (e.key === 'ArrowDown' ? 1 : -1), 0, items.length - 1)].focus();
+    }
+    if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); closeLangMenu(true); }
+  });
+  document.addEventListener('pointerdown', (e) => { if (menuOpen && !e.target.closest('#lang')) closeLangMenu(); });
+
+  // barra superior + rebote al llegar a los bordes de la lista
+
   const scroller = $('#scroller');
   const toolbar = $('#toolbar');
   scroller.addEventListener('scroll', () => toolbar.classList.toggle('is-scrolled', scroller.scrollTop > 2), { passive: true });
 
-  // Rebote elástico en los bordes de la lista (rueda del ratón / panel táctil)
   const content = $('#scroll-content');
   const over = new Spring({
     response: 0.42, dampingFraction: 1, precision: 0.2,
     onUpdate: (y) => { content.style.transform = Math.abs(y) < 0.2 ? '' : `translateY(${y}px)`; },
   });
-  let overRaw = 0, overIdle = 0;
+  let overRaw = 0, overTimer = 0;
   scroller.addEventListener('wheel', (e) => {
     if (e.ctrlKey) return;
     const dy = e.deltaY * (e.deltaMode === 1 ? 18 : e.deltaMode === 2 ? scroller.clientHeight : 1);
@@ -151,21 +246,22 @@
     e.preventDefault();
     overRaw = clamp(overRaw - dy, pullTop ? 0 : -800, pullTop ? 800 : 0);
     over.track(rubberBand(overRaw, scroller.clientHeight, 0.55) * 0.34);
-    clearTimeout(overIdle);
-    overIdle = setTimeout(() => { overRaw = 0; over.to(0); }, 120);
+    clearTimeout(overTimer);
+    overTimer = setTimeout(() => { overRaw = 0; over.to(0); }, 120);
   }, { passive: false });
 
-  // ───────────────────────── Filtro segmentado ─────────────────────────
+  // filtro segmentado (cambia al presionar, no al soltar)
+
   const segmented = $('#segmented');
-  const thumb = $('#segmented-thumb');
+  const thumb = $('#thumb');
   const thumbX = new Spring({ response: 0.34, dampingFraction: 0.78, precision: 0.1, onUpdate: (x) => { thumb.style.transform = `translateX(${x}px)`; } });
   const thumbW = new Spring({ response: 0.34, dampingFraction: 0.86, precision: 0.1, onUpdate: (w) => { thumb.style.width = `${w}px`; } });
 
   function placeThumb(animated) {
-    const btn = segmented.querySelector('[aria-selected="true"]');
-    if (!btn || !btn.offsetWidth) return;
-    if (animated) { thumbX.to(btn.offsetLeft); thumbW.to(btn.offsetWidth); }
-    else { thumbX.jump(btn.offsetLeft); thumbW.jump(btn.offsetWidth); }
+    const b = segmented.querySelector('[aria-selected="true"]');
+    if (!b || !b.offsetWidth) return;
+    if (animated) { thumbX.to(b.offsetLeft); thumbW.to(b.offsetWidth); }
+    else { thumbX.jump(b.offsetLeft); thumbW.jump(b.offsetWidth); }
   }
   function setFilter(filter, animated = true) {
     if (state.filter === filter) return;
@@ -175,7 +271,6 @@
     renderList(false);
     scroller.scrollTop = 0;
   }
-  // Se activa al presionar (pointerdown), sin esperar a soltar
   segmented.addEventListener('pointerdown', (e) => {
     const b = e.target.closest('button[data-filter]');
     if (b && e.button === 0) setFilter(b.dataset.filter);
@@ -194,39 +289,36 @@
   });
   new ResizeObserver(() => placeThumb(thumbX.isAnimating)).observe(segmented);
 
-  // Búsqueda
   const search = $('#search');
   search.addEventListener('input', () => { state.query = search.value.trim().toLowerCase(); renderList(false); });
 
-  // ───────────────────────── Lista ─────────────────────────
+  // lista
+
   const list = $('#list');
 
   function matchesFilter(r) {
-    switch (state.filter) {
-      case 'updates': return r.canUpdate;
-      case 'ok': return r.status === 'ok';
-      case 'none': return !r.canUpdate && r.status !== 'ok';
-      default: return true;
-    }
+    if (state.filter === 'updates') return r.canUpdate;
+    if (state.filter === 'ok') return r.status === 'ok';
+    if (state.filter === 'none') return !r.canUpdate && r.status !== 'ok';
+    return true;
   }
   function matchesQuery(r) {
     if (!state.query) return true;
-    return [r.name, r.deviceClass, r.provider, r.installedVersion, r.latestVersion, r.statusText, r.source]
+    return [r.name, r.deviceClass, r.provider, r.installedVersion, r.latestVersion, statusText(r), sourceName(r.sourceKey)]
       .some((v) => v && String(v).toLowerCase().includes(state.query));
   }
 
   function rowHtml(r) {
     const selected = state.selected.has(r.id);
     const check = r.canUpdate
-      ? `<button class="check" role="checkbox" aria-checked="${selected}" aria-label="Seleccionar ${esc(r.name)}" data-check="${r.id}" data-press>${ICON.check}</button>`
+      ? `<button class="check" role="checkbox" aria-checked="${selected}" aria-label="${esc(r.name)}" data-check="${r.id}" data-press>${ICON.check}</button>`
       : '<span class="check-spacer"></span>';
-    const installed = r.hasDriver ? (r.installedVersion + (r.nvidiaVersion ? ` (${r.nvidiaVersion})` : '')) : 'Sin driver';
-    const latest = r.latestVersion || '—';
-    const versions = r.latestVersion && r.canUpdate
-      ? `<span class="v v-installed">${esc(installed)}</span>${ICON.arrow}<span class="v v-latest">${esc(latest)}</span>`
+    const installed = installedText(r);
+    const versions = r.canUpdate && r.latestVersion
+      ? `<span class="v v-installed">${esc(installed)}</span>${ICON.arrow}<span class="v v-latest">${esc(r.latestVersion)}</span>`
       : `<span class="v v-installed">${esc(installed)}</span>`;
     const sub = [r.deviceClass, r.provider].filter(Boolean).map(esc).join(' · ');
-    const subVersions = r.canUpdate && r.latestVersion ? ` · ${esc(installed)} → ${esc(latest)}` : ` · ${esc(installed)}`;
+    const subVersions = r.canUpdate && r.latestVersion ? ` · ${esc(installed)} → ${esc(r.latestVersion)}` : ` · ${esc(installed)}`;
     return `<div class="row${selected ? ' is-selected' : ''}" role="button" tabindex="0" data-id="${r.id}" data-press>
       ${check}
       ${glyph(r.deviceClass)}
@@ -235,30 +327,32 @@
         <span class="row-sub">${sub || '&nbsp;'}<span class="sub-versions">${subVersions}</span></span>
       </span>
       <span class="versions">${versions}</span>
-      <span class="pill ${pillClass(r)}" title="${esc(r.statusText)}">${esc(pillLabel(r))}</span>
+      <span class="pill ${pillClass(r)}" title="${esc(statusText(r))}">${esc(t('pill.' + r.status))}</span>
       ${ICON.chevron}
     </div>`;
+  }
+
+  function emptyHtml(icon, title, text) {
+    return `<div class="empty">${icon}<h3>${esc(title)}</h3><p>${esc(text)}</p></div>`;
   }
 
   function renderList(entering) {
     const rows = state.rows.filter((r) => matchesFilter(r) && matchesQuery(r));
     let html = '';
 
-    if (rows.length === 0) {
-      html = state.query
-        ? `<div class="empty">${ICON.search}<h3>Sin resultados</h3><p>Nada coincide con «${esc(search.value)}».</p></div>`
-        : state.filter === 'updates'
-          ? `<div class="empty">${ICON.sparkle}<h3>Todo al día</h3><p>No hay versiones oficiales más recientes que las instaladas.</p></div>`
-          : `<div class="empty">${ICON.search}<h3>Nada que mostrar</h3><p>No hay dispositivos en esta categoría.</p></div>`;
+    if (!rows.length) {
+      if (state.query) html = emptyHtml(ICON.search, t('empty.search.title'), t('empty.search.text', { q: search.value }));
+      else if (state.filter === 'updates') html = emptyHtml(ICON.sparkle, t('empty.good.title'), t('empty.good.text'));
+      else html = emptyHtml(ICON.search, t('empty.none.title'), t('empty.none.text'));
     } else if (state.filter === 'all') {
       const groups = [
-        ['Actualizaciones disponibles', rows.filter((r) => r.canUpdate)],
-        ['Al día', rows.filter((r) => r.status === 'ok')],
-        ['Sin datos en fuentes oficiales', rows.filter((r) => !r.canUpdate && r.status !== 'ok')],
+        ['section.updates', rows.filter((r) => r.canUpdate)],
+        ['section.ok', rows.filter((r) => r.status === 'ok')],
+        ['section.none', rows.filter((r) => !r.canUpdate && r.status !== 'ok')],
       ];
       for (const [title, items] of groups) {
         if (!items.length) continue;
-        html += `<section class="section"><div class="section-header"><span>${title}</span><span>${items.length}</span></div><div class="group">${items.map(rowHtml).join('')}</div></section>`;
+        html += `<section class="section"><div class="section-header"><span>${esc(t(title))}</span><span>${items.length}</span></div><div class="group">${items.map(rowHtml).join('')}</div></section>`;
       }
     } else {
       html = `<section class="section"><div class="group">${rows.map(rowHtml).join('')}</div></section>`;
@@ -272,19 +366,27 @@
     }
   }
 
-  function updateCounts() {
-    const counts = {
+  function counts() {
+    const c = {
       all: state.rows.length,
       updates: state.rows.filter((r) => r.canUpdate).length,
       ok: state.rows.filter((r) => r.status === 'ok').length,
     };
-    counts.none = counts.all - counts.updates - counts.ok;
-    document.querySelectorAll('[data-count]').forEach((el) => { el.textContent = counts[el.dataset.count] || ''; });
+    c.none = c.all - c.updates - c.ok;
+    return c;
+  }
+  function updateCounts() {
+    const c = counts();
+    document.querySelectorAll('[data-count]').forEach((el) => { el.textContent = c[el.dataset.count] || ''; });
     placeThumb(false);
-    return counts;
+  }
+  function updateSubtitle() {
+    const c = counts();
+    $('#subtitle').textContent = plural(c.all, 'sum.one', 'sum.many') + ' · ' + (c.updates ? t('sum.updates', { n: c.updates }) : t('sum.good'));
   }
 
-  // Selección: la casilla cambia al presionar, sin esperar a soltar
+  // seleccion: la casilla cambia en el pointerdown
+
   function toggleSelected(id, force) {
     const r = state.byId.get(id);
     if (!r || !r.canUpdate || state.installing) return;
@@ -301,7 +403,7 @@
   list.addEventListener('pointerdown', (e) => {
     const c = e.target.closest('[data-check]');
     if (c && e.button === 0) {
-      e.preventDefault(); // no robar el foco ni iniciar selección de texto
+      e.preventDefault();
       toggleSelected(+c.dataset.check);
     }
   });
@@ -319,38 +421,38 @@
     else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       const rows = [...list.querySelectorAll('.row')];
-      const i = rows.indexOf(row);
-      const next = rows[clamp(i + (e.key === 'ArrowDown' ? 1 : -1), 0, rows.length - 1)];
+      const next = rows[clamp(rows.indexOf(row) + (e.key === 'ArrowDown' ? 1 : -1), 0, rows.length - 1)];
       next && next.focus();
     }
   });
 
-  // ───────────────────────── Barra de acción flotante ─────────────────────────
+  // barra de accion de abajo
+
   const bar = $('#action-bar');
   const barY = new Spring({ value: 140, response: 0.4, dampingFraction: 0.8, precision: 0.2, onUpdate: (y) => { bar.style.transform = `translate(-50%, ${y}px)`; } });
   barY.jump(140);
 
   function updateActionBar() {
-    const ids = [...state.selected];
-    const visible = ids.length > 0 && !state.scanning && !state.installing;
+    const rows = [...state.selected].map((id) => state.byId.get(id)).filter(Boolean);
+    const visible = rows.length > 0 && !state.scanning && !state.installing;
     bar.setAttribute('aria-hidden', String(!visible));
     barY.to(visible ? 0 : 140);
-    if (!ids.length) return;
-    const rows = ids.map((id) => state.byId.get(id)).filter(Boolean);
+    if (!rows.length) return;
     const size = rows.reduce((a, r) => a + (r.sizeBytes || 0), 0);
-    $('#action-count').textContent = plural(rows.length, 'driver seleccionado', 'drivers seleccionados');
-    const sources = [...new Set(rows.map((r) => r.source))].join(', ');
-    $('#action-meta').textContent = [size ? `${formatSize(size)} aprox.` : '', sources].filter(Boolean).join(' · ');
-    $('#btn-update').textContent = rows.length === 1 ? 'Actualizar' : `Actualizar ${rows.length}`;
+    $('#action-count').textContent = plural(rows.length, 'bar.one', 'bar.many');
+    const sources = [...new Set(rows.map((r) => sourceName(r.sourceKey)))].join(', ');
+    $('#action-meta').textContent = [size ? t('bar.approx', { size: formatSize(size) }) : '', sources].filter(Boolean).join(' · ');
+    $('#btn-update').textContent = rows.length === 1 ? t('btn.update') : t('btn.updateN', { n: rows.length });
   }
-  $('#btn-clear').addEventListener('click', () => { [...state.selected].forEach((id) => toggleSelected(id, false)); });
+  $('#btn-clear').addEventListener('click', () => [...state.selected].forEach((id) => toggleSelected(id, false)));
   $('#btn-update').addEventListener('click', () => openConfirm());
 
-  // ───────────────────────── Hoja inferior ─────────────────────────
+  // hoja inferior (detalles, confirmar, progreso, resultado)
+
   const sheetEl = $('#sheet');
   const sheetBody = $('#sheet-body');
   const scrim = $('#scrim');
-  const sheet = { open: false, dismissable: true, onClose: null };
+  const sheet = { open: false, dismissable: true, onClose: null, redraw: null };
 
   const closedY = () => sheetEl.offsetHeight + 40;
   const sheetY = new Spring({
@@ -360,10 +462,7 @@
       scrim.style.opacity = String(1 - clamp(y / closedY(), 0, 1));
     },
     onRest: () => {
-      if (!sheet.open) {
-        sheetEl.classList.remove('is-visible');
-        sheetBody.replaceChildren();
-      }
+      if (!sheet.open) { sheetEl.classList.remove('is-visible'); sheetBody.replaceChildren(); }
     },
   });
   const sheetH = new Spring({
@@ -372,11 +471,12 @@
     onRest: () => { sheetBody.style.height = ''; },
   });
 
+  // al cambiar el contenido de una hoja abierta, la altura se anima con muelle
   function setSheetContent(node, animate) {
     const from = sheetBody.offsetHeight;
     sheetBody.replaceChildren(node);
-    if (!animate) { sheetBody.style.height = ''; return; }
     sheetBody.style.height = '';
+    if (!animate) return;
     const to = sheetBody.offsetHeight;
     if (!sheetH.isAnimating) sheetH.value = from;
     sheetBody.style.height = `${sheetH.value}px`;
@@ -384,24 +484,28 @@
     node.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 240, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1)' });
   }
 
-  function openSheet(node, { dismissable = true, onClose = null } = {}) {
-    sheet.dismissable = dismissable;
-    sheet.onClose = onClose;
+  function openSheet(node, opts = {}) {
+    sheet.dismissable = opts.dismissable !== false;
+    sheet.onClose = opts.onClose || null;
+    sheet.redraw = opts.redraw || null;
     if (sheet.open) { setSheetContent(node, true); return; }
     setSheetContent(node, false);
     sheet.open = true;
     sheetEl.classList.add('is-visible');
     sheetEl.setAttribute('aria-hidden', 'false');
     scrim.classList.add('is-active');
-    // Si se estaba cerrando, se invierte desde donde esté y con su velocidad (interrumpible)
-    if (!sheetY.isAnimating) sheetY.jump(closedY());
+    if (!sheetY.isAnimating) sheetY.jump(closedY()); // si se estaba cerrando, sigue desde ahi
     sheetY.to(0);
-    requestAnimationFrame(() => { const f = sheetEl.querySelector('[data-autofocus]') || sheetEl.querySelector('button'); f && f.focus({ preventScroll: true }); });
+    requestAnimationFrame(() => {
+      const f = sheetEl.querySelector('[data-autofocus]') || sheetEl.querySelector('button');
+      f && f.focus({ preventScroll: true });
+    });
   }
 
   function closeSheet(velocity) {
     if (!sheet.open) return;
     sheet.open = false;
+    sheet.redraw = null;
     sheetEl.setAttribute('aria-hidden', 'true');
     scrim.classList.remove('is-active');
     sheetY.to(closedY(), velocity);
@@ -410,11 +514,12 @@
     cb && cb();
   }
 
-  function nudgeSheet() { sheetY.to(0, -520); } // rebote al intentar cerrar algo que no se puede cerrar
+  // si no se puede cerrar (instalando) hace un pequeño rebote para que se note
+  const nudgeSheet = () => sheetY.to(0, -520);
 
   scrim.addEventListener('pointerdown', () => (sheet.dismissable ? closeSheet() : nudgeSheet()));
 
-  // Arrastrar la hoja: sigue al puntero, resistencia elástica en los bordes, suelta con su velocidad
+  // arrastrar la hoja desde la barrita de arriba
   const vt = new VelocityTracker();
   let drag = null;
   sheetEl.addEventListener('pointerdown', (e) => {
@@ -428,8 +533,7 @@
   sheetEl.addEventListener('pointermove', (e) => {
     if (!drag) return;
     let y = drag.from + (e.clientY - drag.y0);
-    if (y < 0) y = rubberBand(y, 160);
-    else if (!sheet.dismissable) y = rubberBand(y, 160);
+    if (y < 0 || !sheet.dismissable) y = rubberBand(y, 160);
     vt.add(e.clientY);
     sheetY.track(y);
   });
@@ -444,107 +548,119 @@
   sheetEl.addEventListener('pointercancel', endDrag);
 
   function el(html) {
-    const t = document.createElement('template');
-    t.innerHTML = html.trim();
-    return t.content.firstElementChild;
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html.trim();
+    return tpl.content.firstElementChild;
   }
 
-  // ───────────────────────── Detalles ─────────────────────────
-  function openDetails(id) {
+  function onAction(node, handlers) {
+    node.addEventListener('click', (e) => {
+      const a = e.target.closest('[data-action]');
+      if (a && handlers[a.dataset.action]) handlers[a.dataset.action](a);
+    });
+  }
+
+  // detalles de un dispositivo
+
+  function detailsNode(id) {
     const r = state.byId.get(id);
-    if (!r) return;
-    const installed = r.hasDriver ? r.installedVersion + (r.nvidiaVersion ? ` (${r.nvidiaVersion})` : '') : 'Sin driver';
-    const others = (r.others || []).map((o) => `<div><span class="mv">${esc(o.version || '—')}</span><span class="ms">${esc(o.source)} · ${esc(o.title)}</span></div>`).join('');
+    const others = (r.others || []).map((o) =>
+      `<div><span class="mv">${esc(o.version || '—')}</span><span class="ms">${esc(sourceName(o.sourceKey))} · ${esc(o.title)}</span></div>`).join('');
     const selected = state.selected.has(id);
+    const latestInfo = [r.latestDate, sourceName(r.sourceKey)].filter(Boolean).join(' · ') || t('d.notFound');
 
     const node = el(`<div class="sheet-content">
       <div class="sheet-head">
         ${glyph(r.deviceClass)}
         <div style="min-width:0;flex:1">
           <h2 class="sheet-title">${esc(r.name)}</h2>
-          <p class="sheet-subtitle"><span class="pill ${pillClass(r)}">${esc(r.statusText)}</span></p>
+          <p class="sheet-subtitle"><span class="pill ${pillClass(r)}">${esc(statusText(r))}</span></p>
         </div>
       </div>
       <div class="compare">
         <div class="compare-card">
-          <div class="compare-label">Instalado</div>
-          <div class="compare-version">${esc(installed)}</div>
+          <div class="compare-label">${esc(t('d.installed'))}</div>
+          <div class="compare-version">${esc(installedText(r))}</div>
           <div class="compare-date">${esc(r.installedDate || '')}</div>
         </div>
         <div class="compare-card${r.canUpdate ? ' is-latest' : ''}">
-          <div class="compare-label">Última versión oficial</div>
+          <div class="compare-label">${esc(t('d.latest'))}</div>
           <div class="compare-version">${esc(r.latestVersion || '—')}</div>
-          <div class="compare-date">${esc([r.latestDate, r.source].filter(Boolean).join(' · ') || 'No encontrada en las fuentes oficiales')}</div>
+          <div class="compare-date">${esc(latestInfo)}</div>
         </div>
       </div>
       <dl class="meta">
-        ${r.latestTitle ? `<dt>Paquete</dt><dd>${esc(r.latestTitle)}</dd>` : ''}
-        ${r.match ? `<dt>Coincidencia</dt><dd>${r.match === 'exact' ? 'Exacta, para tu modelo' : 'Genérica: puede no corresponder a tu modelo exacto'}</dd>` : ''}
-        <dt>Tipo</dt><dd>${esc(r.deviceClass || '—')}</dd>
-        <dt>Proveedor</dt><dd>${esc(r.provider || '—')}</dd>
-        ${r.infName ? `<dt>Archivo INF</dt><dd>${esc(r.infName)}</dd>` : ''}
-        ${r.sizeBytes ? `<dt>Tamaño</dt><dd>${formatSize(r.sizeBytes)}</dd>` : ''}
+        ${r.latestTitle ? `<dt>${esc(t('d.package'))}</dt><dd>${esc(r.latestTitle)}</dd>` : ''}
+        ${r.match ? `<dt>${esc(t('d.match'))}</dt><dd>${esc(t(r.match === 'exact' ? 'd.exact' : 'd.generic'))}</dd>` : ''}
+        <dt>${esc(t('d.type'))}</dt><dd>${esc(r.deviceClass || '—')}</dd>
+        <dt>${esc(t('d.provider'))}</dt><dd>${esc(r.provider || '—')}</dd>
+        ${r.infName ? `<dt>${esc(t('d.inf'))}</dt><dd>${esc(r.infName)}</dd>` : ''}
+        ${r.sizeBytes ? `<dt>${esc(t('d.size'))}</dt><dd>${formatSize(r.sizeBytes)}</dd>` : ''}
       </dl>
-      ${others ? `<div class="subhead">Otras versiones encontradas</div><div class="mini-list">${others}</div>` : ''}
-      ${(r.hardwareIds || []).length ? `<div class="subhead">Hardware IDs</div><div class="mono">${r.hardwareIds.map(esc).join('<br>')}</div>` : ''}
+      ${others ? `<div class="subhead">${esc(t('d.others'))}</div><div class="mini-list">${others}</div>` : ''}
+      ${(r.hardwareIds || []).length ? `<div class="subhead">${esc(t('d.hwids'))}</div><div class="mono">${r.hardwareIds.map(esc).join('<br>')}</div>` : ''}
       <div class="sheet-actions">
-        ${r.infoUrl ? '<button class="btn btn-gray" data-action="open-url" data-press>Ver página oficial</button>' : ''}
-        ${r.canUpdate ? `<button class="btn ${selected ? 'btn-gray' : 'btn-primary'}" data-action="toggle" data-press data-autofocus>${selected ? 'Quitar de la selección' : 'Seleccionar para actualizar'}</button>`
-                      : '<button class="btn btn-gray" data-action="close" data-press data-autofocus>Cerrar</button>'}
+        ${r.infoUrl ? `<button class="btn btn-gray" data-action="url" data-press>${esc(t('d.page'))}</button>` : ''}
+        ${r.canUpdate
+          ? `<button class="btn ${selected ? 'btn-gray' : 'btn-primary'}" data-action="toggle" data-press data-autofocus>${esc(t(selected ? 'd.unselect' : 'd.select'))}</button>`
+          : `<button class="btn btn-gray" data-action="close" data-press data-autofocus>${esc(t('d.close'))}</button>`}
       </div>
     </div>`);
 
-    node.addEventListener('click', (e) => {
-      const a = e.target.closest('[data-action]');
-      if (!a) return;
-      if (a.dataset.action === 'open-url') send({ type: 'openUrl', url: r.infoUrl });
-      if (a.dataset.action === 'toggle') { toggleSelected(id); closeSheet(); }
-      if (a.dataset.action === 'close') closeSheet();
+    onAction(node, {
+      url: () => send({ type: 'openUrl', url: r.infoUrl }),
+      toggle: () => { toggleSelected(id); closeSheet(); },
+      close: () => closeSheet(),
     });
-    openSheet(node);
+    return node;
   }
 
-  // ───────────────────────── Confirmación ─────────────────────────
-  function openConfirm() {
-    const rows = [...state.selected].map((id) => state.byId.get(id)).filter((r) => r && r.canUpdate);
-    if (!rows.length) return;
+  function openDetails(id) {
+    if (!state.byId.has(id)) return;
+    openSheet(detailsNode(id), { redraw: () => setSheetContent(detailsNode(id), false) });
+  }
+
+  // confirmar actualizacion
+
+  function confirmNode(rows) {
     const size = rows.reduce((a, r) => a + (r.sizeBytes || 0), 0);
-    const items = rows.slice(0, 8).map((r) => `<div><span class="ms" style="flex:1">${esc(r.name)}</span><span class="mv">${esc(r.hasDriver ? r.installedVersion : 'sin driver')} → ${esc(r.latestVersion)}</span></div>`).join('')
-      + (rows.length > 8 ? `<div><span class="ms">… y ${rows.length - 8} más</span></div>` : '');
-    const hasNvidia = rows.some((r) => r.sourceKey === 'nvidia');
-    const hasGeneric = rows.some((r) => r.match === 'generic');
+    const items = rows.slice(0, 8).map((r) =>
+      `<div><span class="ms" style="flex:1">${esc(r.name)}</span><span class="mv">${esc(r.hasDriver ? r.installedVersion : t('c.noDriver'))} → ${esc(r.latestVersion)}</span></div>`).join('')
+      + (rows.length > 8 ? `<div><span class="ms">${esc(t('c.more', { n: rows.length - 8 }))}</span></div>` : '');
 
     const node = el(`<div class="sheet-content">
       <div class="sheet-head"><div>
-        <h2 class="sheet-title">Actualizar ${plural(rows.length, 'driver', 'drivers')}</h2>
-        <p class="sheet-subtitle">Se descargarán de sus fuentes oficiales${size ? ` (unos ${formatSize(size)})` : ''} y se instalarán uno a uno. La pantalla o la red pueden parpadear unos segundos.</p>
+        <h2 class="sheet-title">${esc(rows.length === 1 ? t('c.one') : t('c.many', { n: rows.length }))}</h2>
+        <p class="sheet-subtitle">${esc(t('c.text', { size: size ? t('c.size', { size: formatSize(size) }) : '' }))}</p>
       </div></div>
       <div class="mini-list">${items}</div>
-      ${hasNvidia ? '<p class="sheet-subtitle" style="margin-top:12px">El driver de NVIDIA se instala con el asistente oficial de NVIDIA: sigue sus pasos cuando aparezca.</p>' : ''}
-      ${hasGeneric ? '<p class="sheet-subtitle" style="margin-top:12px">Algunos drivers tienen coincidencia genérica: si no corresponden a tu modelo, Windows no los aplicará.</p>' : ''}
+      ${rows.some((r) => r.sourceKey === 'nvidia') ? `<p class="sheet-subtitle" style="margin-top:12px">${esc(t('c.nvidia'))}</p>` : ''}
+      ${rows.some((r) => r.match === 'generic') ? `<p class="sheet-subtitle" style="margin-top:12px">${esc(t('c.generic'))}</p>` : ''}
       <div class="switch-row">
-        <div>Crear punto de restauración<small>Permite volver atrás si un driver da problemas</small></div>
-        <button class="switch" role="switch" aria-checked="${state.restorePoint}" aria-label="Crear punto de restauración" data-press></button>
+        <div>${esc(t('c.restore'))}<small>${esc(t('c.restoreHint'))}</small></div>
+        <button class="switch" role="switch" aria-checked="${state.restorePoint}" aria-label="${esc(t('c.restore'))}" data-press></button>
       </div>
       <div class="sheet-actions">
-        <button class="btn btn-gray btn-large" data-action="cancel" data-press>Cancelar</button>
-        <button class="btn btn-primary btn-large" data-action="go" data-press data-autofocus>Actualizar</button>
+        <button class="btn btn-gray btn-large" data-action="cancel" data-press>${esc(t('c.cancel'))}</button>
+        <button class="btn btn-primary btn-large" data-action="go" data-press data-autofocus>${esc(t('c.go'))}</button>
       </div>
     </div>`);
 
     const sw = node.querySelector('.switch');
-    sw.addEventListener('pointerdown', (e) => { if (e.button === 0) { e.preventDefault(); state.restorePoint = !state.restorePoint; sw.setAttribute('aria-checked', String(state.restorePoint)); } });
-    sw.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); state.restorePoint = !state.restorePoint; sw.setAttribute('aria-checked', String(state.restorePoint)); } });
-    node.addEventListener('click', (e) => {
-      const a = e.target.closest('[data-action]');
-      if (!a) return;
-      if (a.dataset.action === 'cancel') closeSheet();
-      if (a.dataset.action === 'go') startInstall(rows);
-    });
-    openSheet(node);
+    const flip = () => { state.restorePoint = !state.restorePoint; sw.setAttribute('aria-checked', String(state.restorePoint)); };
+    sw.addEventListener('pointerdown', (e) => { if (e.button === 0) { e.preventDefault(); flip(); } });
+    sw.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); flip(); } });
+    onAction(node, { cancel: () => closeSheet(), go: () => startInstall(rows) });
+    return node;
   }
 
-  // ───────────────────────── Instalación ─────────────────────────
+  function openConfirm() {
+    const rows = [...state.selected].map((id) => state.byId.get(id)).filter((r) => r && r.canUpdate);
+    if (rows.length) openSheet(confirmNode(rows), { redraw: () => setSheetContent(confirmNode(rows), false) });
+  }
+
+  // instalacion
+
   function startInstall(rows) {
     state.installing = true;
     state.install = { rows, results: new Map(), total: rows.length };
@@ -553,13 +669,13 @@
 
     const node = el(`<div class="sheet-content">
       <div class="sheet-head"><div style="flex:1;min-width:0">
-        <h2 class="sheet-title">Actualizando drivers</h2>
-        <p class="sheet-subtitle" id="install-message">Preparando…</p>
+        <h2 class="sheet-title">${esc(t('i.title'))}</h2>
+        <p class="sheet-subtitle" id="install-message" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t('i.preparing'))}</p>
       </div></div>
       <div class="overall"><div class="progress"><div class="progress-fill" id="install-fill"></div></div></div>
       <div class="task-list">${rows.map((r) => `<div class="task" data-task="${r.id}" data-state="pending">
           <span class="task-icon">${ICON.pending}</span>
-          <span style="min-width:0"><div class="task-name">${esc(r.name)}</div><div class="task-msg">${esc(r.latestVersion)} · ${esc(r.source)}</div></span>
+          <span style="min-width:0"><div class="task-name">${esc(r.name)}</div><div class="task-msg">${esc(r.latestVersion)} · ${esc(sourceName(r.sourceKey))}</div></span>
         </div>`).join('')}</div>
     </div>`);
     openSheet(node, { dismissable: false });
@@ -569,21 +685,19 @@
     send({ type: 'install', ids: rows.map((r) => r.id), restorePoint: state.restorePoint });
   }
 
-  function setTask(id, stateName, message) {
-    const t = sheetBody.querySelector(`[data-task="${id}"]`);
-    if (!t) return;
-    t.dataset.state = stateName;
-    const icon = t.querySelector('.task-icon');
-    icon.innerHTML = stateName === 'working' ? '<span class="spinner"></span>' : stateName === 'ok' ? ICON.ok : stateName === 'fail' ? ICON.x : stateName === 'skip' ? ICON.dash : ICON.pending;
-    if (message) t.querySelector('.task-msg').textContent = message;
-    if (stateName === 'working') {
-      // Desplaza solo el contenido de la hoja (scrollIntoView movería también la ventana)
-      const box = t.closest('.sheet-content');
-      if (box) {
-        const top = t.offsetTop - box.offsetTop;
-        if (top < box.scrollTop || top + t.offsetHeight > box.scrollTop + box.clientHeight)
-          box.scrollTo({ top: top - box.clientHeight / 2, behavior: 'smooth' });
-      }
+  function setTask(id, st, message) {
+    const task = sheetBody.querySelector(`[data-task="${id}"]`);
+    if (!task) return;
+    task.dataset.state = st;
+    task.querySelector('.task-icon').innerHTML =
+      st === 'working' ? '<span class="spinner"></span>' : st === 'ok' ? ICON.ok : st === 'fail' ? ICON.x : st === 'skip' ? ICON.dash : ICON.pending;
+    if (message) task.querySelector('.task-msg').textContent = message;
+    if (st === 'working') {
+      // ojo: scrollIntoView moveria tambien la ventana entera, asi que se desplaza solo la hoja
+      const box = task.closest('.sheet-content');
+      const top = task.offsetTop - box.offsetTop;
+      if (top < box.scrollTop || top + task.offsetHeight > box.scrollTop + box.clientHeight)
+        box.scrollTo({ top: top - box.clientHeight / 2, behavior: 'smooth' });
     }
   }
 
@@ -591,39 +705,41 @@
     state.installing = false;
     const results = [...state.install.results.values()];
     const ok = msg.okCount, failed = msg.failCount;
-    const allOk = failed === 0;
-    const lines = results.map((r) => `<div><span class="mv" style="color:var(--${r.ok ? 'green' : r.status === 'notApplied' ? 'orange' : 'red'})">${r.ok ? '✓' : r.status === 'notApplied' ? '–' : '✕'}</span><span class="ms" style="white-space:normal">${esc(r.name)} — ${esc(r.message)}</span></div>`).join('');
+    const good = failed === 0 && ok > 0;
+    const lines = results.map((r) => {
+      const color = r.ok ? 'green' : r.status === 'notApplied' ? 'orange' : 'red';
+      const mark = r.ok ? '✓' : r.status === 'notApplied' ? '–' : '✕';
+      return `<div><span class="mv" style="color:var(--${color})">${mark}</span><span class="ms" style="white-space:normal">${esc(r.name)} — ${esc(r.message)}</span></div>`;
+    }).join('');
 
-    const title = ok === 0 ? 'No se instaló ningún driver' : allOk ? (ok === 1 ? 'Driver actualizado' : `${ok} drivers actualizados`) : `${ok} de ${ok + failed} drivers actualizados`;
-    const sub = ok === 0 ? 'Revisa los detalles de cada uno.'
-      : msg.reboot ? 'Reinicia el equipo para terminar de aplicar los cambios.'
-      : 'No es obligatorio reiniciar, pero se recomienda.';
+    const title = ok === 0 ? t('r.none') : failed === 0 ? (ok === 1 ? t('r.one') : t('r.many', { n: ok })) : t('r.partial', { ok, total: ok + failed });
+    const sub = ok === 0 ? t('r.subNone') : msg.reboot ? t('r.subReboot') : t('r.subOptional');
 
     const node = el(`<div class="sheet-content">
       <div class="result-hero">
-        <div class="badge ${allOk && ok > 0 ? 'ok' : 'warn'}">${allOk && ok > 0 ? ICON.done : ICON.warn}</div>
+        <div class="badge ${good ? 'ok' : 'warn'}">${good ? ICON.done : ICON.warn}</div>
         <h2 class="sheet-title">${esc(title)}</h2>
         <p class="sheet-subtitle">${esc(sub)}</p>
       </div>
-      <div class="subhead">Detalle</div>
+      <div class="subhead">${esc(t('r.detail'))}</div>
       <div class="mini-list">${lines}</div>
       <div class="sheet-actions">
-        ${ok > 0 ? '<button class="btn btn-gray btn-large" data-action="later" data-press>Más tarde</button><button class="btn btn-primary btn-large" data-action="restart" data-press data-autofocus>Reiniciar ahora</button>'
-                 : '<button class="btn btn-primary btn-large" data-action="later" data-press data-autofocus>Cerrar</button>'}
+        ${ok > 0
+          ? `<button class="btn btn-gray btn-large" data-action="later" data-press>${esc(t('r.later'))}</button><button class="btn btn-primary btn-large" data-action="restart" data-press data-autofocus>${esc(t('r.restart'))}</button>`
+          : `<button class="btn btn-primary btn-large" data-action="later" data-press data-autofocus>${esc(t('r.close'))}</button>`}
       </div>
     </div>`);
-    node.addEventListener('click', (e) => {
-      const a = e.target.closest('[data-action]');
-      if (!a) return;
-      if (a.dataset.action === 'restart') { a.disabled = true; send({ type: 'restart' }); }
-      if (a.dataset.action === 'later') closeSheet();
+    onAction(node, {
+      restart: (b) => { b.disabled = true; send({ type: 'restart' }); },
+      later: () => closeSheet(),
     });
     state.selected.clear();
-    openSheet(node, { dismissable: true, onClose: () => send({ type: 'scan' }) });
+    openSheet(node, { onClose: () => send({ type: 'scan' }) });
     setToolbarEnabled(true);
   }
 
-  // ───────────────────────── Análisis ─────────────────────────
+  // pantalla de analisis
+
   const scanEl = $('#scan');
   const scanFill = $('#scan-fill');
   const scanShow = new Spring({
@@ -635,7 +751,7 @@
 
   function setStep(phase) {
     const order = ['devices', 'sources', 'compare'];
-    const idx = order.indexOf(phase);
+    const idx = phase === 'done' ? 3 : order.indexOf(phase);
     document.querySelectorAll('#steps li').forEach((li) => {
       const i = order.indexOf(li.dataset.step);
       li.classList.toggle('is-done', i < idx);
@@ -645,13 +761,13 @@
 
   function showScan() {
     state.scanning = true;
+    state.lastProgress = null;
     updateActionBar();
     setToolbarEnabled(false);
-    $('#scan-title').textContent = 'Analizando tu PC';
-    $('#scan-message').textContent = 'Leyendo los componentes del equipo…';
+    $('#scan-title').textContent = t('scan.title');
+    $('#scan-message').textContent = t('scan.devices');
     $('#btn-retry').hidden = true;
-    $('#step-sources-meta').textContent = '';
-    scanEl.querySelector('.scan-glyph').hidden = false;
+    $('#sources-count').textContent = '';
     setStep('devices');
     scanProgress.jump(0);
     scanProgress.to(0.06);
@@ -660,16 +776,18 @@
   }
 
   function onScanProgress(p) {
+    state.lastProgress = p;
     if (scanEl.hidden) showScan();
-    $('#scan-message').textContent = p.message;
+    const msg = $('#scan-message');
     setStep(p.phase);
-    if (p.phase === 'devices') scanProgress.to(0.06);
+    if (p.phase === 'devices') { msg.textContent = t('scan.devices'); scanProgress.to(0.06); }
     if (p.phase === 'sources') {
-      const f = p.total > 0 ? p.done / p.total : 0;
-      scanProgress.to(0.1 + 0.82 * f);
-      $('#step-sources-meta').textContent = p.total > 0 ? `${p.done}/${p.total}` : '';
+      msg.textContent = p.device ? t('scan.checking', { name: p.device }) : t('scan.sources');
+      msg.title = msg.textContent;
+      scanProgress.to(0.1 + 0.82 * (p.total > 0 ? p.done / p.total : 0));
+      $('#sources-count').textContent = p.total > 0 ? `${p.done}/${p.total}` : '';
     }
-    if (p.phase === 'compare') scanProgress.to(0.96);
+    if (p.phase === 'compare') { msg.textContent = t('scan.compare'); scanProgress.to(0.96); }
   }
 
   function onScanResult(msg) {
@@ -682,13 +800,10 @@
     setStep('done');
     scanProgress.to(1);
     $('#controls').hidden = false;
-    const counts = updateCounts();
-    $('#subtitle').textContent = counts.updates
-      ? `${plural(counts.all, 'dispositivo analizado', 'dispositivos analizados')} · ${plural(counts.updates, 'con una versión oficial más reciente', 'con una versión oficial más reciente')}`
-      : `${plural(counts.all, 'dispositivo analizado', 'dispositivos analizados')} · todo al día`;
+    updateCounts();
+    updateSubtitle();
 
-    const banner = $('#banner');
-    banner.hidden = state.warnings.length === 0;
+    $('#banner').hidden = state.warnings.length === 0;
     $('#banner-text').textContent = state.warnings.join(' · ');
 
     if (state.filter !== 'all' && state.filter !== 'updates') setFilter('all', false);
@@ -701,8 +816,9 @@
   function onScanError(message) {
     state.scanning = false;
     if (scanEl.hidden) { scanEl.hidden = false; scanShow.to(1); }
-    $('#scan-title').textContent = 'No se pudo completar el análisis';
+    $('#scan-title').textContent = t('scan.error');
     $('#scan-message').textContent = message;
+    $('#scan-message').title = message;
     $('#btn-retry').hidden = false;
     setToolbarEnabled(true);
   }
@@ -712,7 +828,8 @@
     $('#btn-export').disabled = !on || state.installing || state.rows.length === 0;
   }
 
-  // ───────────────────────── Aviso flotante ─────────────────────────
+  // aviso flotante
+
   const toast = $('#toast');
   const toastY = new Spring({ value: -80, response: 0.38, dampingFraction: 0.78, precision: 0.2, onUpdate: (y) => { toast.style.transform = `translate(-50%, ${y}px)`; } });
   toastY.jump(-80);
@@ -724,7 +841,6 @@
     toastTimer = setTimeout(() => toastY.to(-80), 3200);
   }
 
-  // ───────────────────────── Botones y teclado ─────────────────────────
   $('#btn-rescan').addEventListener('click', () => send({ type: 'scan' }));
   $('#btn-retry').addEventListener('click', () => send({ type: 'scan' }));
   $('#btn-export').addEventListener('click', () => send({ type: 'export' }));
@@ -732,17 +848,21 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (sheet.open) { sheet.dismissable ? closeSheet() : nudgeSheet(); }
+      if (menuOpen) closeLangMenu(true);
+      else if (sheet.open) { sheet.dismissable ? closeSheet() : nudgeSheet(); }
       else if (document.activeElement === search && search.value) { search.value = ''; state.query = ''; renderList(false); }
     }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && !state.scanning) { e.preventDefault(); search.focus(); search.select(); }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r') { e.preventDefault(); if (!state.scanning && !state.installing) send({ type: 'scan' }); }
+    const k = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && k === 'f' && !state.scanning) { e.preventDefault(); search.focus(); search.select(); }
+    if ((e.ctrlKey || e.metaKey) && k === 'r') { e.preventDefault(); if (!state.scanning && !state.installing) send({ type: 'scan' }); }
   });
   document.addEventListener('contextmenu', (e) => { if (!e.target.closest('input, .mono')) e.preventDefault(); });
 
-  // ───────────────────────── Mensajes del motor ─────────────────────────
+  // mensajes que llegan de C#
+
   function handle(msg) {
     switch (msg.type) {
+      case 'init': setLang(msg.lang, false); break;
       case 'scanStarted': showScan(); break;
       case 'scanProgress': onScanProgress(msg); break;
       case 'scanResult': onScanResult(msg); break;
@@ -763,15 +883,16 @@
         break;
       }
       case 'installDone': showInstallResult(msg); break;
-      case 'exported': showToast(`Informe guardado en el escritorio: ${msg.fileName}`); break;
+      case 'exported': showToast(t('toast.exported', { file: msg.fileName })); break;
       case 'error': showToast(msg.message); break;
     }
   }
 
-  // Estado inicial
+  applyStaticTexts();
+  $('#scan-message').textContent = t('scan.devices');
   scanEl.hidden = false;
   setStep('devices');
   scanProgress.jump(0.04);
-  window.ODU = { handle, state }; // para pruebas
+  window.ODU = { handle, state, setLang }; // para probar desde la consola
   send({ type: 'ready' });
 })();

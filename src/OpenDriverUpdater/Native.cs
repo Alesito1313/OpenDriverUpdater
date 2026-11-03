@@ -1,35 +1,27 @@
+using System;
+using System.Drawing;
 using System.Runtime.InteropServices;
 
-namespace OpenDriverUpdater;
-
-/// <summary>Ajustes de ventana de Windows 11: barra de título oscura/clara y del mismo color que la interfaz.</summary>
-internal static class Native
+namespace OpenDriverUpdater
 {
-    private const int DwmwaUseImmersiveDarkMode = 20;
-    private const int DwmwaWindowCornerPreference = 33;
-    private const int DwmwaCaptionColor = 35;
-    private const int DwmwcpRound = 2;
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
-
-    public static void ApplyWindowStyle(IntPtr hwnd, bool dark, Color caption)
+    // barra de titulo del mismo color que la app (Windows 11; en Windows 10 se ignora)
+    static class Native
     {
-        try
-        {
-            int on = dark ? 1 : 0;
-            DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref on, sizeof(int));
+        [DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
-            int round = DwmwcpRound;
-            DwmSetWindowAttribute(hwnd, DwmwaWindowCornerPreference, ref round, sizeof(int));
-
-            // COLORREF = 0x00BBGGRR. En Windows 10 estos atributos se ignoran sin error.
-            int colorRef = caption.R | (caption.G << 8) | (caption.B << 16);
-            DwmSetWindowAttribute(hwnd, DwmwaCaptionColor, ref colorRef, sizeof(int));
-        }
-        catch
+        public static void StyleWindow(IntPtr hwnd, bool dark, Color caption)
         {
-            // dwmapi no disponible: se usa la barra de título estándar
+            try
+            {
+                int darkMode = dark ? 1 : 0;
+                DwmSetWindowAttribute(hwnd, 20, ref darkMode, 4);   // DWMWA_USE_IMMERSIVE_DARK_MODE
+                int round = 2;
+                DwmSetWindowAttribute(hwnd, 33, ref round, 4);      // DWMWA_WINDOW_CORNER_PREFERENCE
+                int color = caption.R | (caption.G << 8) | (caption.B << 16);
+                DwmSetWindowAttribute(hwnd, 35, ref color, 4);      // DWMWA_CAPTION_COLOR
+            }
+            catch { }
         }
     }
 }

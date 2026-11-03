@@ -1,122 +1,89 @@
 # OpenDriverUpdater
 
-Herramienta **de código abierto** para Windows 10/11 que mantiene tus drivers al día de forma sencilla:
+Un actualizador de drivers para Windows 10/11, gratis y de código abierto. Lo hice porque los que hay suelen venir con publicidad, versiones de pago o drivers de sitios raros.
 
-1. **Al abrirla**, analiza los componentes de tu PC y los drivers que tienen instalados.
-2. **Comprueba** si existe una versión más reciente publicada por el fabricante.
-3. **Tú eliges** qué drivers actualizar marcando las casillas.
-4. **Con un botón** los descarga, los instala y te pregunta si quieres reiniciar.
+**[⬇ Descargar OpenDriverUpdater.exe](https://github.com/Alesito1313/OpenDriverUpdater/releases/latest/download/OpenDriverUpdater.exe)** (un solo archivo, no hay que instalar nada)
 
-Antes de instalar crea (opcionalmente) un **punto de restauración**, para poder volver atrás si algún driver da problemas.
+Qué hace:
 
-## ¿De dónde salen los drivers?
+1. Al abrirlo mira qué componentes tiene tu PC y qué driver tiene cada uno.
+2. Busca la última versión oficial de cada driver.
+3. Te enseña la versión instalada y la última al lado, y tú marcas cuáles quieres actualizar.
+4. Le das a actualizar, descarga e instala, y te pregunta si quieres reiniciar.
 
-Cada dispositivo se compara con **tres fuentes oficiales**:
+Antes de instalar crea un punto de restauración por si algo sale mal (se puede quitar).
 
-| Fuente | Qué aporta |
+Idiomas: inglés, español, alemán, francés e italiano (la bandera de arriba a la derecha).
+
+## De dónde saca los drivers
+
+Solo de sitios oficiales:
+
+| Fuente | Para qué |
 |---|---|
-| **Windows Update** | Los drivers que Microsoft ofrece automáticamente a tu PC (incluidos los opcionales). |
-| **Catálogo de Microsoft Update** (`catalog.update.microsoft.com`) | Todas las versiones que cada fabricante (Intel, AMD, NVIDIA, Realtek, Qualcomm...) ha publicado para el *Hardware ID* exacto de tu dispositivo, aunque Windows Update no te las ofrezca. |
-| **Web oficial de NVIDIA** | La última versión publicada por NVIDIA para tu tarjeta gráfica, que suele salir antes que en Windows Update. |
+| **Windows Update** | Lo que Microsoft ofrece para tu PC, incluidos los opcionales. |
+| **Catálogo de Microsoft Update** | Todas las versiones que Intel, AMD, NVIDIA, Realtek, etc. han subido para el *Hardware ID* exacto de tu dispositivo, aunque Windows Update no te las ofrezca. |
+| **Web de NVIDIA** | Si tienes gráfica NVIDIA, la última versión de su web, que suele salir antes. |
 
-La lista muestra **todos** los dispositivos con:
+Si un driver solo coincide con un ID genérico (puede no ser para tu modelo exacto) se avisa y no se marca solo.
 
-- versión y fecha del driver **instalado**,
-- versión y fecha de la **última versión oficial** encontrada y su fuente,
-- el **estado**: actualización disponible, sin driver, driver del fabricante disponible (tienes el genérico de Microsoft), al día, o sin datos.
+Cosas que de momento no hace: AMD (Radeon) e Intel no tienen una forma pública de consultar su última versión, así que para ellos se usa el catálogo de Microsoft, que va algo más atrasado. Y los drivers adaptados por el fabricante del portátil (Dell, HP, Lenovo…) pueden no coincidir con los genéricos.
 
-Solo se marcan por defecto las actualizaciones claras (mismo fabricante y coincidencia exacta con tu modelo). Las coincidencias **genéricas** (encontradas por un ID menos específico) se muestran, pero tú decides si instalarlas.
+## «Windows protegió su PC»
 
-Doble clic en una fila muestra los detalles (todas las versiones encontradas, Hardware IDs, enlace oficial). **Exportar informe** guarda un .txt en el escritorio con todo el análisis, útil para reportar problemas.
+Sale con cualquier programa que no esté firmado digitalmente y que aún tenga pocas descargas. Para abrirlo: **Más información → Ejecutar de todas formas**.
 
-### Cómo se instala cada fuente
-
-- **Windows Update**: con el propio motor de Windows Update.
-- **Catálogo**: se descarga el paquete `.cab` oficial, se extrae y se instala con `pnputil /add-driver /install`, la herramienta de Windows.
-- **NVIDIA**: se descarga el instalador oficial y se abre el asistente de NVIDIA.
-
-### Limitaciones conocidas
-
-- AMD (gráficas Radeon) e Intel no tienen un servicio público para consultar su última versión; para ellos se usa el Catálogo de Microsoft, donde publican con algo de retraso.
-- Los drivers de portátiles adaptados por el fabricante del equipo (Dell, HP, Lenovo...) pueden no coincidir con la versión genérica del fabricante del chip.
-
-## Aviso «Windows protegió su PC» (SmartScreen)
-
-Windows muestra este aviso con cualquier programa descargado que **no esté firmado digitalmente** o que todavía tenga pocas descargas. No significa que tenga virus: Windows simplemente aún no lo conoce.
-
-Para abrirlo: **Más información → Ejecutar de todas formas**.
-
-Para que el aviso desaparezca, el ejecutable tiene que firmarse con un certificado de firma de código reconocido por Microsoft. El flujo de compilación ya está preparado: en cuanto se añadan los secretos `SIGN_CERT_BASE64` (certificado `.pfx` en base64) y `SIGN_CERT_PASSWORD` en *Settings → Secrets and variables → Actions*, cada versión saldrá firmada automáticamente. Opciones para conseguir el certificado:
-
-| Opción | Coste | Notas |
-|---|---|---|
-| [SignPath Foundation](https://signpath.org/) | Gratis para código abierto | Exige que el proyecto ya tenga versiones publicadas y cierta reputación. |
-| Certificado OV de una autoridad (Certum, Sectigo…) | De pago (anual) | Disponible para particulares en España. La reputación en SmartScreen se gana con las descargas. |
-| Azure Artifact Signing | ~10 $/mes | Para particulares solo en EE. UU. y Canadá. |
-| Microsoft Store (MSIX) | Gratis | Microsoft firma el paquete y no hay aviso, pero requiere empaquetar la app y pasar la revisión de la tienda. |
+Para quitarlo hace falta firmar el exe con un certificado de firma de código. La compilación ya está preparada: si se añaden los secretos `SIGN_CERT_BASE64` y `SIGN_CERT_PASSWORD` en el repositorio, cada versión sale firmada. Opciones: [SignPath Foundation](https://signpath.org/) (gratis para proyectos open source con algo de trayectoria), un certificado OV de pago (Certum, Sectigo…) o publicarlo en la Microsoft Store.
 
 ## Privacidad
 
-OpenDriverUpdater no recopila ni envía datos personales ni telemetría. Para buscar drivers envía **solo los identificadores de hardware** de tus dispositivos (por ejemplo `PCI\VEN_10EC&DEV_8168`) a:
-
-- Windows Update y el Catálogo de Microsoft Update (Microsoft),
-- el servicio de drivers de NVIDIA (solo si tienes una gráfica NVIDIA).
-
-El informe exportado se guarda únicamente en tu escritorio.
+No recoge datos ni tiene telemetría. Para buscar drivers solo envía los identificadores de hardware de tus dispositivos (tipo `PCI\VEN_10EC&DEV_8168`) a Microsoft y, si tienes gráfica NVIDIA, a NVIDIA. El informe que se puede exportar se guarda en tu escritorio y ya está.
 
 ## Requisitos
 
-- Windows 10 u 11 (x64)
-- Microsoft Edge WebView2 (incluido en Windows 11 y en Windows 10 actualizado)
-- Permisos de administrador (el programa los pide al abrirse)
-- Conexión a Internet y el servicio «Windows Update» sin deshabilitar
+- Windows 10 u 11 de 64 bits
+- .NET Framework 4.8 y WebView2 (los dos vienen ya con Windows 10/11 actualizado)
+- Permisos de administrador (para instalar drivers hacen falta)
 
 ## Compilar
 
-Necesitas el [SDK de .NET 8](https://dotnet.microsoft.com/download/dotnet/8.0).
+Con el [SDK de .NET](https://dotnet.microsoft.com/download) instalado:
 
-```powershell
-# Ejecutar en modo desarrollo
-dotnet run --project src/OpenDriverUpdater
-
-# Generar un único .exe autónomo (no requiere tener .NET instalado)
-dotnet publish src/OpenDriverUpdater -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+```
+dotnet build src/OpenDriverUpdater -c Release -o out
 ```
 
-El ejecutable queda en `publish/OpenDriverUpdater.exe`.
+Sale `out/OpenDriverUpdater.exe`. Cada push a `main` lo compila GitHub Actions y lo publica en Releases.
 
-Si subes el proyecto a GitHub, el flujo de `.github/workflows/build.yml` compila el `.exe` automáticamente en cada *push* y lo deja descargable en la pestaña **Actions**.
-
-## Estructura
+## Cómo está hecho
 
 ```
 src/OpenDriverUpdater/
-├── Program.cs                      Punto de entrada
-├── MainForm.cs                     Ventana: aloja la interfaz (WebView2) y la conecta con el motor
-├── ui/                             Interfaz: index.html, styles.css, app.js, spring.js (muelles físicos)
-├── app.manifest                    Pide permisos de administrador
-├── Models/Models.cs                Driver instalado, actualización, resultado
-└── Services/
-    ├── DeviceScanner.cs            Dispositivos, drivers instalados y Hardware IDs (WMI)
-    ├── UpdateEngine.cs             Consulta las fuentes y compara versiones
-    ├── WindowsUpdateService.cs     Windows Update Agent
-    ├── CatalogService.cs           Catálogo de Microsoft Update (búsqueda, descarga, pnputil)
-    ├── NvidiaService.cs            Última versión en la web de NVIDIA
-    ├── VersionUtil.cs              Comparación de versiones
-    ├── Http.cs                     Descargas y reintentos
-    └── SystemActions.cs            Punto de restauración y reinicio
+├── Program.cs           arranque; carga las dll de WebView2 que van dentro del exe
+├── MainForm.cs          la ventana: muestra la interfaz web y hace de puente con el motor
+├── Lang.cs              textos del lado C# en los 5 idiomas
+├── Native.cs            color de la barra de título
+├── Core/
+│   ├── DeviceScanner.cs dispositivos y drivers instalados (WMI)
+│   ├── Engine.cs        pregunta a las 3 fuentes y compara versiones
+│   ├── Catalog.cs       catálogo de Microsoft Update (buscar, descargar, instalar con pnputil)
+│   ├── Nvidia.cs        última versión en la web de NVIDIA
+│   ├── WindowsUpdate.cs Windows Update por COM
+│   ├── Versions.cs      comparar versiones
+│   ├── Net.cs           descargas y reintentos
+│   └── SystemTools.cs   punto de restauración y reinicio
+└── ui/                  la interfaz (HTML/CSS/JS): index.html, styles.css, app.js, spring.js, i18n.js
 ```
 
-## Hoja de ruta (ideas para contribuir)
+La interfaz usa animaciones con muelles (spring.js) para que todo responda al momento y se pueda interrumpir.
 
-- [x] Catálogo de Microsoft Update y web de NVIDIA como fuentes adicionales
-- [ ] Fuentes directas de AMD e Intel
-- [ ] Copia de seguridad de los drivers actuales (`pnputil /export-driver`) antes de actualizar
-- [ ] Ocultar un driver para que no se vuelva a ofrecer
-- [ ] Botón de cancelar durante la descarga
-- [ ] Traducciones (inglés, catalán, etc.)
-- [ ] Modo línea de comandos para automatizar (`--scan`, `--update-all`)
+## Ideas pendientes
+
+- [ ] Copia de los drivers actuales antes de actualizar (`pnputil /export-driver`)
+- [ ] Ocultar un driver para que no vuelva a salir
+- [ ] AMD e Intel directamente desde su web
+- [ ] Modo consola (`--scan`, `--update-all`)
 
 ## Licencia
 
-MIT — ver [LICENSE](LICENSE).
+MIT

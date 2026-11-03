@@ -1,13 +1,6 @@
-/*
- * spring.js — Muelles físicos interrumpibles.
- *
- * Parámetros al estilo SwiftUI / Core Animation:
- *   response:        duración aproximada de una oscilación (s). Menor = más rápido.
- *   dampingFraction: 1 = amortiguación crítica (sin rebote); <1 = rebote sutil.
- *
- * Al cambiar el destino en mitad del movimiento se conserva la velocidad actual,
- * así la animación nunca "salta": se redirige con naturalidad (interrumpibilidad).
- */
+// Muelles para las animaciones (mismos parametros que SwiftUI: response + dampingFraction).
+// dampingFraction 1 = sin rebote, menos de 1 = rebota un poco.
+// Si se cambia el destino a mitad de camino se mantiene la velocidad, asi nunca pega saltos.
 (function () {
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -33,7 +26,7 @@
 
     get isAnimating() { return this._raf !== 0; }
 
-    /** Mueve hacia `target`. `velocity` opcional (unidades/s), p. ej. la del gesto al soltar. */
+    // velocity (opcional) en unidades/s, p.ej. la del raton al soltar un arrastre
     to(target, velocity) {
       this.target = target;
       if (velocity !== undefined) this.velocity = velocity;
@@ -45,7 +38,7 @@
       return this;
     }
 
-    /** Coloca el valor sin animar (también usado mientras se arrastra con el dedo/ratón). */
+    // sin animar
     jump(value) {
       if (this._raf) cancelAnimationFrame(this._raf);
       this._raf = 0;
@@ -56,7 +49,7 @@
       return this;
     }
 
-    /** Sigue un valor sin física (gesto activo) pero recordando la velocidad para soltar luego. */
+    // mientras se arrastra: sigue al raton sin fisica
     track(value) {
       if (this._raf) cancelAnimationFrame(this._raf);
       this._raf = 0;
@@ -67,7 +60,7 @@
     _tick(now) {
       let dt = Math.min((now - this._last) / 1000, 1 / 20);
       this._last = now;
-      // Integración semi-implícita con subpasos fijos: estable con cualquier tasa de refresco
+      // pasos fijos de 1/240 s para que vaya igual a 60 que a 144 Hz
       const h = 1 / 240;
       while (dt > 1e-6) {
         const step = Math.min(h, dt);
@@ -90,11 +83,8 @@
     }
   }
 
-  /**
-   * Convierte un muelle en una curva CSS linear() para transiciones sencillas
-   * (respuesta al soltar un botón, colores...). Las transiciones CSS también se
-   * pueden interrumpir: el navegador parte del valor actual.
-   */
+  // Simula el muelle y lo convierte en una curva CSS linear(), para las transiciones
+  // simples (botones al soltar, switch...). Las transiciones CSS tambien se interrumpen bien.
   function springEasing(response, dampingFraction) {
     const k = Math.pow((2 * Math.PI) / response, 2);
     const c = (4 * Math.PI * dampingFraction) / response;
@@ -113,14 +103,14 @@
     return { easing: `linear(${points.join(', ')})`, duration: Math.round(t * 1000) };
   }
 
-  /** Resistencia elástica estilo iOS: cuanto más se estira, menos avanza. */
+  // resistencia tipo iOS: cuanto mas estiras menos se mueve
   function rubberBand(offset, dimension, constant = 0.55) {
     const sign = Math.sign(offset);
     const x = Math.abs(offset);
     return sign * (1 - 1 / ((x * constant) / dimension + 1)) * dimension;
   }
 
-  /** Medidor de velocidad para gestos (px/s) con los últimos ~100 ms. */
+  // velocidad del gesto (px/s) con los ultimos ~100 ms
   class VelocityTracker {
     constructor() { this.samples = []; }
     reset() { this.samples = []; }
