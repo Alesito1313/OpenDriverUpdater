@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -19,9 +21,24 @@ jobs:
         run: >
           dotnet publish src/OpenDriverUpdater/OpenDriverUpdater.csproj
           -c Release -r win-x64 --self-contained true
-          -p:PublishSingleFile=true -o publish
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true -o publish
 
       - uses: actions/upload-artifact@v4
         with:
           name: OpenDriverUpdater-win-x64
           path: publish/OpenDriverUpdater.exe
+
+      # Cada cambio en main se publica como versión descargable con enlace fijo:
+      # https://github.com/<usuario>/OpenDriverUpdater/releases/latest/download/OpenDriverUpdater.exe
+      - name: Publicar versión descargable
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ultima -y --cleanup-tag || true
+          gh release create ultima publish/OpenDriverUpdater.exe \
+            --title "OpenDriverUpdater (última versión)" \
+            --notes "Compilado automáticamente desde ${GITHUB_SHA::7}. Descarga OpenDriverUpdater.exe y ábrelo (no necesita instalación)." \
+            --latest
