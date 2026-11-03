@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- .NET Framework 4.8 viene de serie en Windows 10/11, asi el exe ocupa poco -->
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <AssemblyName>OpenDriverUpdater</AssemblyName>
+    <RootNamespace>OpenDriverUpdater</RootNamespace>
+    <DebugType>none</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <Version>0.4.0</Version>
+    <Product>OpenDriverUpdater</Product>
+    <AssemblyTitle>OpenDriverUpdater</AssemblyTitle>
+    <Description>Open source driver updater for Windows</Description>
+    <Company>Alesito1313</Company>
+    <Authors>Alesito1313</Authors>
+    <Copyright>Copyright © 2026 Alesito1313 · MIT License</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Management" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <!-- la interfaz va dentro del exe -->
+  <ItemGroup>
+    <EmbeddedResource Include="ui\*.*" LogicalName="ui/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!--
+    Metemos tambien las dll de WebView2 dentro del exe para repartir un unico archivo.
+    Program.cs las carga desde aqui (AssemblyResolve) y saca WebView2Loader.dll a AppData.
+  -->
+  <PropertyGroup>
+    <WebView2Pkg>$(NuGetPackageRoot)microsoft.web.webview2\1.0.2903.40\</WebView2Pkg>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(WebView2Pkg)lib\net462\Microsoft.Web.WebView2.Core.dll" LogicalName="lib/Microsoft.Web.WebView2.Core.dll" Visible="false" />
+    <EmbeddedResource Include="$(WebView2Pkg)lib\net462\Microsoft.Web.WebView2.WinForms.dll" LogicalName="lib/Microsoft.Web.WebView2.WinForms.dll" Visible="false" />
+    <EmbeddedResource Include="$(WebView2Pkg)runtimes\win-x64\native\WebView2Loader.dll" LogicalName="lib/WebView2Loader.dll" Visible="false" />
+  </ItemGroup>
+
+</Project>

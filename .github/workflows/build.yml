@@ -1,0 +1,62 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      # si algun dia hay certificado: secretos SIGN_CERT_BASE64 (el .pfx en base64) y SIGN_CERT_PASSWORD
+      HAS_CERT: ${{ secrets.SIGN_CERT_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compilar
+        run: dotnet build src/OpenDriverUpdater/OpenDriverUpdater.csproj -c Release -o out
+
+      # abre el programa de verdad en la maquina de GitHub, analiza y comprueba que la lista sale
+      - name: Prueba
+        shell: pwsh
+        run: |
+          $out = Join-Path $pwd 'selftest.json'
+          $p = Start-Process out\OpenDriverUpdater.exe -ArgumentList '--selftest', "`"$out`"" -PassThru
+          if (-not $p.WaitForExit(420000)) { $p.Kill(); throw 'la prueba no termino' }
+          Get-Content $out
+          if (-not (Get-Content $out | ConvertFrom-Json).ok) { throw 'la prueba fallo' }
+
+      - name: Firmar
+        if: env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          CERT: ${{ secrets.SIGN_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 /d OpenDriverUpdater out\OpenDriverUpdater.exe
+          if ($LASTEXITCODE -ne 0) { throw "fallo al firmar" }
+          Remove-Item $pfx
+
+      # las dll de WebView2 van dentro del exe, asi que solo hace falta el exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenDriverUpdater
+          path: out/OpenDriverUpdater.exe
+
+      - name: Publicar
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ultima -y --cleanup-tag || true
+          gh release create ultima out/OpenDriverUpdater.exe \
+            --title "OpenDriverUpdater (latest)" \
+            --notes "Build ${GITHUB_SHA::7}. Download OpenDriverUpdater.exe and run it, no install needed." \
+            --latest
