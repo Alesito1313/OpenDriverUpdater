@@ -10,6 +10,10 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      # Firma opcional: se activa sola cuando existen los secretos del repositorio
+      # SIGN_CERT_BASE64 (certificado .pfx en base64) y SIGN_CERT_PASSWORD.
+      HAS_SIGNING_CERT: ${{ secrets.SIGN_CERT_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,6 +27,22 @@ jobs:
           -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
           -p:EnableCompressionInSingleFile=true -o publish
+
+      - name: Firmar ejecutable
+        if: env.HAS_SIGNING_CERT == 'true'
+        shell: pwsh
+        env:
+          SIGN_CERT_BASE64: ${{ secrets.SIGN_CERT_BASE64 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_CERT_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+                      Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:SIGN_CERT_PASSWORD `
+              /tr http://timestamp.digicert.com /td SHA256 /d "OpenDriverUpdater" publish\OpenDriverUpdater.exe
+          if ($LASTEXITCODE -ne 0) { throw "La firma falló" }
+          Remove-Item $pfx
 
       - uses: actions/upload-artifact@v4
         with:

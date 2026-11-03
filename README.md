@@ -40,9 +40,34 @@ Doble clic en una fila muestra los detalles (todas las versiones encontradas, Ha
 - AMD (gráficas Radeon) e Intel no tienen un servicio público para consultar su última versión; para ellos se usa el Catálogo de Microsoft, donde publican con algo de retraso.
 - Los drivers de portátiles adaptados por el fabricante del equipo (Dell, HP, Lenovo...) pueden no coincidir con la versión genérica del fabricante del chip.
 
+## Aviso «Windows protegió su PC» (SmartScreen)
+
+Windows muestra este aviso con cualquier programa descargado que **no esté firmado digitalmente** o que todavía tenga pocas descargas. No significa que tenga virus: Windows simplemente aún no lo conoce.
+
+Para abrirlo: **Más información → Ejecutar de todas formas**.
+
+Para que el aviso desaparezca, el ejecutable tiene que firmarse con un certificado de firma de código reconocido por Microsoft. El flujo de compilación ya está preparado: en cuanto se añadan los secretos `SIGN_CERT_BASE64` (certificado `.pfx` en base64) y `SIGN_CERT_PASSWORD` en *Settings → Secrets and variables → Actions*, cada versión saldrá firmada automáticamente. Opciones para conseguir el certificado:
+
+| Opción | Coste | Notas |
+|---|---|---|
+| [SignPath Foundation](https://signpath.org/) | Gratis para código abierto | Exige que el proyecto ya tenga versiones publicadas y cierta reputación. |
+| Certificado OV de una autoridad (Certum, Sectigo…) | De pago (anual) | Disponible para particulares en España. La reputación en SmartScreen se gana con las descargas. |
+| Azure Artifact Signing | ~10 $/mes | Para particulares solo en EE. UU. y Canadá. |
+| Microsoft Store (MSIX) | Gratis | Microsoft firma el paquete y no hay aviso, pero requiere empaquetar la app y pasar la revisión de la tienda. |
+
+## Privacidad
+
+OpenDriverUpdater no recopila ni envía datos personales ni telemetría. Para buscar drivers envía **solo los identificadores de hardware** de tus dispositivos (por ejemplo `PCI\VEN_10EC&DEV_8168`) a:
+
+- Windows Update y el Catálogo de Microsoft Update (Microsoft),
+- el servicio de drivers de NVIDIA (solo si tienes una gráfica NVIDIA).
+
+El informe exportado se guarda únicamente en tu escritorio.
+
 ## Requisitos
 
-- Windows 10 u 11 (x64 o ARM64)
+- Windows 10 u 11 (x64)
+- Microsoft Edge WebView2 (incluido en Windows 11 y en Windows 10 actualizado)
 - Permisos de administrador (el programa los pide al abrirse)
 - Conexión a Internet y el servicio «Windows Update» sin deshabilitar
 
@@ -67,7 +92,8 @@ Si subes el proyecto a GitHub, el flujo de `.github/workflows/build.yml` compila
 ```
 src/OpenDriverUpdater/
 ├── Program.cs                      Punto de entrada
-├── MainForm.cs                     Interfaz (lista con casillas, botones, progreso)
+├── MainForm.cs                     Ventana: aloja la interfaz (WebView2) y la conecta con el motor
+├── ui/                             Interfaz: index.html, styles.css, app.js, spring.js (muelles físicos)
 ├── app.manifest                    Pide permisos de administrador
 ├── Models/Models.cs                Driver instalado, actualización, resultado
 └── Services/

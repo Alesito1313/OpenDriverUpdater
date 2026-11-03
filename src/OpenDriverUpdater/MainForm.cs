@@ -1,462 +1,369 @@
 using System.Diagnostics;
+using System.Reflection;
+using System.Text.Json;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
+using Microsoft.Win32;
 using OpenDriverUpdater.Models;
 using OpenDriverUpdater.Services;
 
 namespace OpenDriverUpdater;
 
 /// <summary>
-/// Ventana principal. Flujo:
-/// 1) Al abrir, analiza todos los dispositivos y sus drivers.
-/// 2) Compara cada uno con Windows Update, el Catálogo de Microsoft Update y la web de NVIDIA.
-/// 3) Muestra versión instalada y última versión oficial; el usuario marca qué actualizar.
-/// 4) Descarga + instala, y pregunta si reiniciar.
+/// Ventana principal: aloja la interfaz (HTML/CSS/JS en la carpeta ui/, embebida en el .exe)
+/// dentro de WebView2 y hace de puente con el motor de drivers en C#.
 /// </summary>
 public sealed class MainForm : Form
 {
-    private static readonly Color UpdateColor = Color.FromArgb(196, 82, 0);
-    private static readonly Color OkColor = Color.FromArgb(24, 128, 56);
-    private static readonly Color MutedColor = Color.FromArgb(110, 110, 110);
+    private const string HostName = "app.opendriverupdater.example";
 
-    private readonly Label _header = new()
-    {
-        Text = "Analizando tu PC…",
-        Dock = DockStyle.Top,
-        Height = 44,
-        Font = new Font("Segoe UI Semibold", 13f),
-        Padding = new Padding(12, 10, 12, 0),
-    };
+    private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
-    private readonly ComboBox _filter = new()
-    {
-        DropDownStyle = ComboBoxStyle.DropDownList,
-        Width = 260,
-        Margin = new Padding(0, 4, 12, 0),
-    };
-
-    private readonly Label _summary = new() { AutoSize = true, Margin = new Padding(0, 8, 0, 0), ForeColor = MutedColor };
-
-    private readonly ListView _list = new()
-    {
-        Dock = DockStyle.Fill,
-        View = View.Details,
-        FullRowSelect = true,
-        CheckBoxes = true,
-        BorderStyle = BorderStyle.None,
-        ShowItemToolTips = true,
-    };
-
-    private readonly CheckBox _restorePoint = new()
-    {
-        Text = "Crear punto de restauración",
-        Checked = true,
-        AutoSize = true,
-        Margin = new Padding(0, 8, 16, 0),
-    };
-
-    private readonly Button _rescanButton = MakeButton("Buscar de nuevo");
-    private readonly Button _recommendedButton = MakeButton("Marcar recomendados");
-    private readonly Button _reportButton = MakeButton("Exportar informe");
-    private readonly Button _updateButton = new()
-    {
-        Text = "Actualizar seleccionados",
-        AutoSize = true,
-        Padding = new Padding(12, 4, 12, 4),
-        Font = new Font("Segoe UI Semibold", 10f),
-        Enabled = false,
-    };
-
-    private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill, Style = ProgressBarStyle.Marquee };
-    private readonly Label _status = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
-
+    private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
     private readonly UpdateEngine _engine = new();
-    private readonly HashSet<DeviceRow> _checked = new();
     private List<DeviceRow> _rows = new();
     private bool _busy;
-    private bool _filling;
-
-    private static readonly string[] FilterOptions =
-    {
-        "Mostrar: todos los drivers",
-        "Mostrar: solo con actualización",
-        "Mostrar: solo al día",
-        "Mostrar: sin datos / integrados",
-    };
+    private bool _started;
 
     public MainForm()
     {
         Text = "OpenDriverUpdater";
-        Width = 1280;
-        Height = 720;
-        MinimumSize = new Size(900, 480);
+        Width = 1200;
+        Height = 800;
+        MinimumSize = new Size(720, 520);
         StartPosition = FormStartPosition.CenterScreen;
-        Font = new Font("Segoe UI", 9.5f);
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* sin icono */ }
 
-        _list.Columns.Add("Dispositivo", 290);
-        _list.Columns.Add("Tipo", 95);
-        _list.Columns.Add("Versión instalada", 150);
-        _list.Columns.Add("Fecha", 82);
-        _list.Columns.Add("Última versión oficial", 160);
-        _list.Columns.Add("Fecha", 82);
-        _list.Columns.Add("Fuente", 145);
-        _list.Columns.Add("Estado", 240);
+        ApplyTheme();
+        Controls.Add(_web);
 
-        _filter.Items.AddRange(FilterOptions);
-        _filter.SelectedIndex = 0;
-
-        var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, Padding = new Padding(10, 2, 10, 2) };
-        top.Controls.AddRange(new Control[] { _filter, _summary });
-
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 52, Padding = new Padding(10, 10, 10, 6) };
-        buttons.Controls.AddRange(new Control[] { _rescanButton, _recommendedButton, _reportButton, _restorePoint, _updateButton });
-
-        var statusBar = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 30, ColumnCount = 2, Padding = new Padding(10, 2, 10, 4) };
-        statusBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
-        statusBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        statusBar.Controls.Add(_progress, 0, 0);
-        statusBar.Controls.Add(_status, 1, 0);
-
-        Controls.Add(_list);
-        Controls.Add(top);
-        Controls.Add(buttons);
-        Controls.Add(statusBar);
-        Controls.Add(_header);
-
-        _rescanButton.Click += async (_, _) => await ScanAsync();
-        _recommendedButton.Click += (_, _) => CheckRecommended();
-        _reportButton.Click += (_, _) => ExportReport();
-        _updateButton.Click += async (_, _) => await UpdateSelectedAsync();
-        _filter.SelectedIndexChanged += (_, _) => FillList();
-        _list.ItemCheck += OnItemCheck;
-        _list.ItemChecked += OnItemChecked;
-        _list.DoubleClick += (_, _) => ShowDetails();
-        Shown += async (_, _) => await ScanAsync();
+        Load += async (_, _) => await InitWebViewAsync();
         FormClosing += OnFormClosing;
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
     }
 
-    private static Button MakeButton(string text) => new() { Text = text, AutoSize = true, Padding = new Padding(8, 2, 8, 2) };
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Native.ApplyWindowStyle(Handle, IsDarkTheme(), BackColor);
+    }
 
-    // ───────────────────────── Escaneo ─────────────────────────
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+        base.Dispose(disposing);
+    }
+
+    // ───────────────────────── Tema ─────────────────────────
+
+    private static bool IsDarkTheme()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is int v && v == 0;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>El fondo de la ventana y la barra de título coinciden con el de la interfaz (sin destellos).</summary>
+    private void ApplyTheme()
+    {
+        BackColor = IsDarkTheme() ? Color.FromArgb(28, 28, 30) : Color.FromArgb(245, 245, 247);
+        _web.DefaultBackgroundColor = BackColor;
+        if (IsHandleCreated) Native.ApplyWindowStyle(Handle, IsDarkTheme(), BackColor);
+    }
+
+    private void OnUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category == UserPreferenceCategory.General && !IsDisposed)
+            BeginInvoke(new Action(ApplyTheme));
+    }
+
+    // ───────────────────────── WebView2 ─────────────────────────
+
+    private async Task InitWebViewAsync()
+    {
+        try
+        {
+            var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenDriverUpdater");
+            var uiDir = ExtractUi(dataDir);
+
+            var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(dataDir, "WebView2"));
+            await _web.EnsureCoreWebView2Async(env);
+
+            var core = _web.CoreWebView2;
+            var s = core.Settings;
+            s.AreDefaultContextMenusEnabled = false;
+            s.IsStatusBarEnabled = false;
+            s.IsZoomControlEnabled = false;
+            s.AreBrowserAcceleratorKeysEnabled = false;
+            s.IsGeneralAutofillEnabled = false;
+            s.IsPasswordAutosaveEnabled = false;
+#if !DEBUG
+            s.AreDevToolsEnabled = false;
+#endif
+            core.SetVirtualHostNameToFolderMapping(HostName, uiDir, CoreWebView2HostResourceAccessKind.Deny);
+            core.WebMessageReceived += OnWebMessage;
+            core.NewWindowRequested += (_, e) => { e.Handled = true; OpenUrl(e.Uri); };
+            core.NavigationStarting += (_, e) =>
+            {
+                // La interfaz nunca navega fuera de sí misma; los enlaces se abren en el navegador del usuario
+                if (!e.Uri.StartsWith($"https://{HostName}/", StringComparison.OrdinalIgnoreCase))
+                {
+                    e.Cancel = true;
+                    OpenUrl(e.Uri);
+                }
+            };
+
+            core.Navigate($"https://{HostName}/index.html");
+        }
+        catch (WebView2RuntimeNotFoundException)
+        {
+            var r = MessageBox.Show(this,
+                "Falta el componente Microsoft Edge WebView2, necesario para mostrar la interfaz.\n\n" +
+                "Viene incluido en Windows 11 y en Windows 10 actualizado. ¿Abrir la página de descarga oficial de Microsoft?",
+                "OpenDriverUpdater", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (r == DialogResult.Yes) OpenUrl("https://developer.microsoft.com/microsoft-edge/webview2/");
+            Close();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "No se pudo iniciar la interfaz:\n\n" + ex.Message, "OpenDriverUpdater",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Close();
+        }
+    }
+
+    /// <summary>Copia la interfaz embebida en el .exe a una carpeta local para servirla.</summary>
+    private static string ExtractUi(string dataDir)
+    {
+        var asm = Assembly.GetExecutingAssembly();
+        var version = asm.GetName().Version?.ToString() ?? "0";
+        var dir = Path.Combine(dataDir, "ui", version);
+        Directory.CreateDirectory(dir);
+        foreach (var name in asm.GetManifestResourceNames().Where(n => n.StartsWith("ui/", StringComparison.Ordinal)))
+        {
+            using var src = asm.GetManifestResourceStream(name)!;
+            using var dst = File.Create(Path.Combine(dir, name["ui/".Length..]));
+            src.CopyTo(dst);
+        }
+        return dir;
+    }
+
+    private void Post(object message)
+    {
+        if (IsDisposed || _web.CoreWebView2 is null) return;
+        if (InvokeRequired) { BeginInvoke(new Action(() => Post(message))); return; }
+        _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(message, Json));
+    }
+
+    private async void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(e.WebMessageAsJson);
+            var msg = doc.RootElement;
+            switch (msg.GetProperty("type").GetString())
+            {
+                case "ready":
+                    if (!_started) { _started = true; await ScanAsync(); }
+                    else if (_rows.Count > 0) PostScanResult(); // la página se recargó
+                    break;
+                case "scan":
+                    await ScanAsync();
+                    break;
+                case "install":
+                    var ids = msg.GetProperty("ids").EnumerateArray().Select(x => x.GetInt32()).ToList();
+                    bool restorePoint = msg.TryGetProperty("restorePoint", out var rp) && rp.GetBoolean();
+                    await InstallAsync(ids, restorePoint);
+                    break;
+                case "export":
+                    Export();
+                    break;
+                case "openUrl":
+                    OpenUrl(msg.GetProperty("url").GetString());
+                    break;
+                case "restart":
+                    SystemActions.RestartNow();
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Post(new { type = "error", message = ex.Message });
+        }
+    }
+
+    // ───────────────────────── Análisis ─────────────────────────
 
     private async Task ScanAsync()
     {
         if (_busy) return;
-        SetBusy(true);
-        _list.Items.Clear();
-        _checked.Clear();
-        _header.Text = "Analizando tu PC…";
-
+        _busy = true;
+        Post(new { type = "scanStarted" });
         var progress = new Progress<ScanProgress>(p =>
-        {
-            SetStatus(p.Message);
-            if (p.Total > 0)
-            {
-                _progress.Style = ProgressBarStyle.Continuous;
-                _progress.Maximum = p.Total;
-                _progress.Value = Math.Min(p.Done, p.Total);
-                _header.Text = "Comparando con las versiones oficiales…";
-            }
-        });
-
+            Post(new { type = "scanProgress", phase = p.Phase, message = p.Message, done = p.Done, total = p.Total }));
         try
         {
             _rows = await _engine.ScanAsync(progress, CancellationToken.None);
-            foreach (var r in _rows.Where(r => r.Recommended)) _checked.Add(r);
-            FillList();
-
-            int updates = _rows.Count(r => r.CanUpdate);
-            _header.Text = updates == 0
-                ? "✔ Todos tus drivers están al día"
-                : $"Hay {updates} driver(s) con una versión oficial más reciente";
-
-            var warnings = new List<string>();
-            if (_engine.WindowsUpdateError is { } wu) warnings.Add("Windows Update no respondió: " + wu);
-            if (_engine.CatalogErrors > 0) warnings.Add($"{_engine.CatalogErrors} consultas al catálogo fallaron (conexión)");
-            if (_engine.NvidiaError is { } nv) warnings.Add("NVIDIA: " + nv);
-            SetStatus(warnings.Count > 0
-                ? "Aviso: " + string.Join(" · ", warnings)
-                : "Marca los drivers que quieras actualizar. Doble clic en una fila para ver los detalles.");
+            PostScanResult();
         }
         catch (Exception ex)
         {
-            _header.Text = "No se pudo completar el análisis";
-            SetStatus(ex.Message);
-            MessageBox.Show(this, "Error al analizar los drivers:\n\n" + ex.Message +
-                                  "\n\nComprueba tu conexión a Internet.",
-                "OpenDriverUpdater", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Post(new { type = "scanError", message = ex.Message + " Comprueba tu conexión a Internet." });
         }
         finally
         {
-            SetBusy(false);
+            _busy = false;
         }
     }
 
-    private IEnumerable<DeviceRow> FilteredRows() => _filter.SelectedIndex switch
+    private void PostScanResult()
     {
-        1 => _rows.Where(r => r.CanUpdate),
-        2 => _rows.Where(r => r.Status == DeviceStatus.UpToDate),
-        3 => _rows.Where(r => r.Status is DeviceStatus.NotFound or DeviceStatus.NotChecked ||
-                              (r.Status == DeviceStatus.MissingDriver && r.Latest is null)),
-        _ => _rows,
-    };
+        var warnings = new List<string>();
+        if (_engine.WindowsUpdateError is { } wu) warnings.Add("Windows Update no respondió: " + wu);
+        if (_engine.CatalogErrors > 0) warnings.Add($"{_engine.CatalogErrors} consultas al Catálogo de Microsoft fallaron (conexión)");
+        if (_engine.NvidiaError is { } nv) warnings.Add("NVIDIA: " + nv);
 
-    private void FillList()
-    {
-        _filling = true;
-        _list.BeginUpdate();
-        _list.Items.Clear();
-        foreach (var r in FilteredRows())
-        {
-            var d = r.Device;
-            var l = r.Latest;
-
-            string installed = d.HasDriver ? d.Version : "(sin driver)";
-            if (d.HasDriver && NvidiaService.IsNvidiaGpu(d) && VersionUtil.NvidiaFromWindows(d.Version) is { } nv)
-                installed += $"  ({nv})";
-
-            var item = new ListViewItem(new[]
-            {
-                d.Name,
-                d.DeviceClass,
-                installed,
-                d.Date?.ToString("dd/MM/yyyy") ?? "",
-                l?.Version is { Length: > 0 } v ? v : l is null ? "—" : "(ver detalles)",
-                l?.Date?.ToString("dd/MM/yyyy") ?? "",
-                l?.SourceName ?? "",
-                r.StatusText,
-            })
-            {
-                Tag = r,
-                Checked = _checked.Contains(r),
-                UseItemStyleForSubItems = true,
-                ToolTipText = l?.Title ?? string.Join("\n", d.HardwareIds.Take(3)),
-            };
-
-            if (r.CanUpdate)
-            {
-                item.ForeColor = UpdateColor;
-                item.Font = new Font(_list.Font, FontStyle.Bold);
-            }
-            else if (r.Status == DeviceStatus.UpToDate) item.ForeColor = OkColor;
-            else item.ForeColor = MutedColor;
-
-            _list.Items.Add(item);
-        }
-        _list.EndUpdate();
-        _filling = false;
-
-        int total = _rows.Count;
-        _summary.Text = total == 0 ? "" :
-            $"{total} dispositivos · {_rows.Count(r => r.CanUpdate)} con actualización · " +
-            $"{_rows.Count(r => r.Status == DeviceStatus.UpToDate)} al día · " +
-            $"{_rows.Count(r => r.Status is DeviceStatus.NotFound or DeviceStatus.NotChecked)} sin datos";
-        RefreshUpdateButton();
+        Post(new { type = "scanResult", rows = _rows.Select((r, i) => ToDto(r, i)).ToList(), warnings });
     }
 
-    private void OnItemCheck(object? sender, ItemCheckEventArgs e)
+    private static object ToDto(DeviceRow r, int id)
     {
-        if (_filling) return;
-        var row = (DeviceRow)_list.Items[e.Index].Tag!;
-        if (e.NewValue == CheckState.Checked && (!row.CanUpdate || _busy))
-            e.NewValue = CheckState.Unchecked; // solo se pueden marcar los que tienen versión más nueva
-    }
-
-    private void OnItemChecked(object? sender, ItemCheckedEventArgs e)
-    {
-        if (_filling) return;
-        var row = (DeviceRow)e.Item.Tag!;
-        if (e.Item.Checked) _checked.Add(row); else _checked.Remove(row);
-        RefreshUpdateButton();
-    }
-
-    private void CheckRecommended()
-    {
-        _checked.Clear();
-        foreach (var r in _rows.Where(r => r.Recommended)) _checked.Add(r);
-        FillList();
-    }
-
-    private void ShowDetails()
-    {
-        if (_list.SelectedItems.Count == 0) return;
-        var r = (DeviceRow)_list.SelectedItems[0].Tag!;
         var d = r.Device;
-
-        var text = $"{d.Name}\n\n" +
-                   $"Estado: {r.StatusText}\n\n" +
-                   $"INSTALADO\n  Versión: {(d.HasDriver ? d.Version : "(ninguno)")}\n  Fecha: {d.Date:dd/MM/yyyy}\n  Proveedor: {d.Provider}\n  INF: {d.InfName}\n\n";
-
-        if (r.Latest is { } l)
+        var l = r.Latest;
+        return new
         {
-            text += $"ÚLTIMA VERSIÓN OFICIAL\n  {l.Title}\n  Versión: {l.Version}\n  Fecha: {l.Date:dd/MM/yyyy}\n" +
-                    $"  Fuente: {l.SourceName}\n  Coincidencia: {(l.Match == MatchQuality.Exact ? "exacta (tu modelo)" : "genérica (puede no ser para tu modelo exacto)")}\n" +
-                    $"  ID buscado: {l.MatchedId}\n\n";
+            id,
+            name = d.Name,
+            deviceClass = d.DeviceClass,
+            provider = d.Provider,
+            hasDriver = d.HasDriver,
+            installedVersion = d.Version,
+            installedDate = d.Date?.ToString("dd/MM/yyyy") ?? "",
+            nvidiaVersion = d.HasDriver && NvidiaService.IsNvidiaGpu(d) ? VersionUtil.NvidiaFromWindows(d.Version) ?? "" : "",
+            infName = d.InfName,
+            hardwareIds = d.HardwareIds.Take(6).ToList(),
+            latestVersion = l?.Version ?? "",
+            latestDate = l?.Date?.ToString("dd/MM/yyyy") ?? "",
+            latestTitle = l?.Title ?? "",
+            source = l?.SourceName ?? "",
+            sourceKey = l?.Source switch
+            {
+                DriverSource.Nvidia => "nvidia",
+                DriverSource.WindowsUpdate => "wu",
+                DriverSource.MicrosoftCatalog => "catalog",
+                _ => "",
+            },
+            match = l is null ? "" : l.Match == MatchQuality.Exact ? "exact" : "generic",
+            infoUrl = l?.InfoUrl ?? "",
+            sizeBytes = l?.SizeBytes ?? 0,
+            status = r.Status switch
+            {
+                DeviceStatus.UpdateAvailable => "update",
+                DeviceStatus.MissingDriver => "missing",
+                DeviceStatus.VendorDriverAvailable => "vendor",
+                DeviceStatus.UpToDate => "ok",
+                DeviceStatus.NotFound => "none",
+                _ => "builtin",
+            },
+            statusText = r.StatusText,
+            canUpdate = r.CanUpdate,
+            recommended = r.Recommended,
+            others = r.AllCandidates
+                .Where(c => c != l)
+                .OrderByDescending(c => VersionUtil.Parse(c.Version) ?? new Version(0, 0))
+                .Take(5)
+                .Select(c => new { version = c.Version, source = c.SourceName, title = c.Title })
+                .ToList(),
+        };
+    }
+
+    // ───────────────────────── Instalación ─────────────────────────
+
+    private async Task InstallAsync(List<int> ids, bool restorePoint)
+    {
+        if (_busy) return;
+        _busy = true;
+        int ok = 0, failed = 0;
+        bool reboot = false;
+        try
+        {
+            if (restorePoint)
+            {
+                Post(new { type = "installStatus", message = "Creando punto de restauración…" });
+                if (!await Task.Run(() => SystemActions.TryCreateRestorePoint("Antes de OpenDriverUpdater")))
+                    Post(new { type = "installStatus", message = "No se pudo crear el punto de restauración (puede estar desactivado). Continuando…" });
+            }
+
+            var valid = ids.Where(i => i >= 0 && i < _rows.Count && _rows[i].CanUpdate).ToList();
+            for (int index = 0; index < valid.Count; index++)
+            {
+                int id = valid[index];
+                int current = index;
+                var progress = new Progress<string>(m =>
+                    Post(new { type = "installProgress", id, index = current, total = valid.Count, message = m }));
+                Post(new { type = "installProgress", id, index = current, total = valid.Count, message = "Preparando…" });
+
+                var outcome = await _engine.InstallAsync(_rows[id], progress, CancellationToken.None);
+                if (outcome.Ok) ok++; else failed++;
+                reboot |= outcome.RebootRequired;
+
+                Post(new
+                {
+                    type = "installItem",
+                    id,
+                    ok = outcome.Ok,
+                    status = outcome.Status == InstallStatus.NotApplied ? "notApplied" : outcome.Ok ? "succeeded" : "failed",
+                    message = outcome.Message,
+                });
+            }
+            reboot |= WindowsUpdateService.IsRebootPending();
         }
-
-        var others = r.AllCandidates.Where(c => c != r.Latest)
-            .OrderByDescending(c => VersionUtil.Parse(c.Version) ?? new Version(0, 0)).Take(5).ToList();
-        if (others.Count > 0)
-            text += "OTRAS VERSIONES ENCONTRADAS\n" + string.Join("\n", others.Select(c => $"  {c.Version} · {c.SourceName} · {c.Title}")) + "\n\n";
-
-        text += "HARDWARE IDs\n  " + string.Join("\n  ", d.HardwareIds.Take(6));
-
-        if (r.Latest?.InfoUrl is { } url)
+        catch (Exception ex)
         {
-            text += "\n\n¿Abrir la página oficial de este driver?";
-            if (MessageBox.Show(this, text, "Detalles del driver", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
-                OpenUrl(url);
+            Post(new { type = "error", message = "Error durante la actualización: " + ex.Message });
         }
-        else
+        finally
         {
-            MessageBox.Show(this, text, "Detalles del driver", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _busy = false;
+            Post(new { type = "installDone", reboot, okCount = ok, failCount = failed });
         }
     }
 
-    private void ExportReport()
+    // ───────────────────────── Otras acciones ─────────────────────────
+
+    private void Export()
     {
         if (_rows.Count == 0) return;
-        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-            $"OpenDriverUpdater-informe-{DateTime.Now:yyyyMMdd-HHmm}.txt");
+        var fileName = $"OpenDriverUpdater-informe-{DateTime.Now:yyyyMMdd-HHmm}.txt";
+        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), fileName);
         try
         {
             File.WriteAllText(path, _engine.BuildReport(_rows));
-            SetStatus("Informe guardado en el escritorio: " + Path.GetFileName(path));
+            Post(new { type = "exported", fileName });
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "No se pudo guardar el informe:\n" + ex.Message, "OpenDriverUpdater",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Post(new { type = "error", message = "No se pudo guardar el informe: " + ex.Message });
         }
     }
 
-    private static void OpenUrl(string url)
+    private static void OpenUrl(string? url)
     {
+        if (url is null || !(url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)))
+            return;
         try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { /* sin navegador */ }
     }
-
-    // ───────────────────────── Actualización ─────────────────────────
-
-    private async Task UpdateSelectedAsync()
-    {
-        if (_busy) return;
-        var selected = _rows.Where(r => _checked.Contains(r) && r.CanUpdate).ToList();
-        if (selected.Count == 0) return;
-
-        var lines = string.Join("\n", selected.Take(12).Select(r =>
-            $"• {r.Device.Name}: {(r.Device.HasDriver ? r.Device.Version : "sin driver")} → {r.Latest!.Version} ({r.Latest.SourceName})"));
-        if (selected.Count > 12) lines += $"\n• … y {selected.Count - 12} más";
-        if (selected.Any(r => r.Latest!.Source == DriverSource.Nvidia))
-            lines += "\n\nEl driver de NVIDIA se instala con el asistente oficial de NVIDIA: sigue sus pasos cuando aparezca.";
-
-        var confirm = MessageBox.Show(this,
-            $"Se van a descargar e instalar {selected.Count} driver(s):\n\n{lines}\n\n" +
-            "Durante la instalación la pantalla puede parpadear o perderse la red unos segundos. ¿Continuar?",
-            "Confirmar actualización", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-        if (confirm != DialogResult.Yes) return;
-
-        SetBusy(true);
-        _header.Text = "Actualizando drivers…";
-        var results = new List<InstallResult>();
-        try
-        {
-            if (_restorePoint.Checked)
-            {
-                SetStatus("Creando punto de restauración…");
-                if (!await Task.Run(() => SystemActions.TryCreateRestorePoint("Antes de OpenDriverUpdater")))
-                    SetStatus("No se pudo crear el punto de restauración (puede estar desactivado o ya creado hoy). Continuando…");
-            }
-
-            _progress.Style = ProgressBarStyle.Continuous;
-            _progress.Maximum = selected.Count;
-            _progress.Value = 0;
-            var stepProgress = new Progress<string>(SetStatus);
-
-            for (int i = 0; i < selected.Count; i++)
-            {
-                _header.Text = $"Actualizando drivers… ({i + 1}/{selected.Count})";
-                var outcome = await _engine.InstallAsync(selected[i], stepProgress, CancellationToken.None);
-                results.Add(new InstallResult(selected[i], outcome));
-                _progress.Value = i + 1;
-            }
-
-            ShowSummary(results);
-
-            bool reboot = results.Any(r => r.Outcome.RebootRequired) || WindowsUpdateService.IsRebootPending();
-            bool anyOk = results.Any(r => r.Outcome.Ok);
-            if (anyOk)
-            {
-                var msg = reboot
-                    ? "Algunos drivers necesitan reiniciar el equipo para terminar de aplicarse.\n\n¿Quieres reiniciar ahora?"
-                    : "Actualización terminada. No es obligatorio reiniciar, pero se recomienda.\n\n¿Quieres reiniciar ahora?";
-                if (MessageBox.Show(this, msg, reboot ? "Reinicio necesario" : "Actualización terminada",
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                {
-                    SystemActions.RestartNow();
-                    return;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, "Error durante la actualización:\n\n" + ex.Message,
-                "OpenDriverUpdater", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        finally
-        {
-            SetBusy(false);
-        }
-
-        await ScanAsync(); // refrescar las versiones instaladas
-    }
-
-    private void ShowSummary(List<InstallResult> results)
-    {
-        int ok = results.Count(r => r.Outcome.Ok);
-        int failed = results.Count - ok;
-
-        var lines = results.Select(r =>
-            (r.Outcome.Ok ? "✔ " : r.Outcome.Status == InstallStatus.NotApplied ? "• " : "✖ ") +
-            r.Row.Device.Name + " — " + r.Outcome.Message);
-
-        MessageBox.Show(this,
-            $"Instalados: {ok}    Sin instalar: {failed}\n\n" + string.Join("\n", lines),
-            "Resumen", MessageBoxButtons.OK,
-            failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-
-        SetStatus($"Terminado: {ok} instalado(s), {failed} sin instalar.");
-    }
-
-    // ───────────────────────── Utilidades UI ─────────────────────────
-
-    private void RefreshUpdateButton()
-    {
-        int n = _rows.Count(r => _checked.Contains(r) && r.CanUpdate);
-        _updateButton.Enabled = !_busy && n > 0;
-        _updateButton.Text = n > 0 ? $"Actualizar seleccionados ({n})" : "Actualizar seleccionados";
-    }
-
-    private void SetBusy(bool busy)
-    {
-        _busy = busy;
-        _rescanButton.Enabled = !busy;
-        _recommendedButton.Enabled = !busy;
-        _reportButton.Enabled = !busy;
-        _restorePoint.Enabled = !busy;
-        _filter.Enabled = !busy;
-        _progress.Visible = busy;
-        if (busy) _progress.Style = ProgressBarStyle.Marquee;
-        UseWaitCursor = busy;
-        RefreshUpdateButton();
-    }
-
-    private void SetStatus(string text) => _status.Text = text;
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
         if (_busy && e.CloseReason == CloseReason.UserClosing)
         {
             var r = MessageBox.Show(this,
-                "Hay una operación en curso. Cerrar ahora durante una instalación de drivers no es recomendable.\n\n¿Cerrar de todos modos?",
+                "Hay una operación en curso. Cerrar durante una instalación de drivers no es recomendable.\n\n¿Cerrar de todos modos?",
                 "OpenDriverUpdater", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (r != DialogResult.Yes) e.Cancel = true;
         }

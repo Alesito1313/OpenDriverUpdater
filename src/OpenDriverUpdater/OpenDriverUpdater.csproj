@@ -7,11 +7,21 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <AssemblyName>OpenDriverUpdater</AssemblyName>
     <RootNamespace>OpenDriverUpdater</RootNamespace>
-    <Version>0.2.1</Version>
+
+    <!-- Metadatos del ejecutable (Propiedades → Detalles en Windows) -->
+    <Version>0.3.0</Version>
     <Product>OpenDriverUpdater</Product>
+    <AssemblyTitle>OpenDriverUpdater</AssemblyTitle>
     <Description>Actualizador de drivers de código abierto para Windows</Description>
+    <Company>OpenDriverUpdater</Company>
+    <Authors>Alesito1313</Authors>
+    <Copyright>Copyright © 2026 OpenDriverUpdater contributors · Licencia MIT</Copyright>
+    <RepositoryUrl>https://github.com/Alesito1313/OpenDriverUpdater</RepositoryUrl>
+    <NeutralLanguage>es-ES</NeutralLanguage>
+
     <!-- Permite compilar también desde Linux/macOS -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <!-- No recortar: la interoperabilidad COM dinámica con Windows Update lo necesita -->
@@ -20,6 +30,12 @@
 
   <ItemGroup>
     <PackageReference Include="System.Management" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <!-- La interfaz (HTML/CSS/JS) va dentro del .exe -->
+  <ItemGroup>
+    <EmbeddedResource Include="ui\*.*" LogicalName="ui/%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

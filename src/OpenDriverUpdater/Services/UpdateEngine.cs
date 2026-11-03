@@ -3,7 +3,8 @@ using OpenDriverUpdater.Models;
 
 namespace OpenDriverUpdater.Services;
 
-public sealed record ScanProgress(string Message, int Done, int Total);
+/// <summary>Phase: "devices" | "sources" | "compare".</summary>
+public sealed record ScanProgress(string Phase, string Message, int Done, int Total);
 
 /// <summary>
 /// Orquesta el análisis: lee los dispositivos, consulta las tres fuentes oficiales en paralelo,
@@ -28,7 +29,7 @@ public sealed class UpdateEngine
         NvidiaError = null;
         _catalogErrors = 0;
 
-        progress.Report(new("Analizando los componentes del equipo…", 0, 0));
+        progress.Report(new("devices", "Leyendo los componentes del equipo…", 0, 0));
         var devices = await Task.Run(DeviceScanner.Scan, ct);
         var rows = devices.Select(d => new DeviceRow { Device = d }).ToList();
 
@@ -49,7 +50,7 @@ public sealed class UpdateEngine
         var nvidiaTask = SearchNvidiaAsync(rows, ct);
 
         await Task.WhenAll(wuTask, catalogTask, nvidiaTask);
-        progress.Report(new("Comparando versiones…", 1, 1));
+        progress.Report(new("compare", "Comparando versiones…", 1, 1));
 
         AttachWindowsUpdate(rows, wuTask.Result);
         foreach (var r in rows) Evaluate(r);
@@ -70,7 +71,7 @@ public sealed class UpdateEngine
         int done = 0;
         using var gate = new SemaphoreSlim(CatalogConcurrency);
 
-        progress.Report(new($"Consultando el catálogo oficial de drivers… (0/{targets.Count})", 0, targets.Count));
+        progress.Report(new("sources", "Consultando Windows Update, el Catálogo de Microsoft y NVIDIA…", 0, targets.Count));
 
         await Task.WhenAll(targets.Select(async row =>
         {
@@ -119,7 +120,7 @@ public sealed class UpdateEngine
             {
                 gate.Release();
                 int n = Interlocked.Increment(ref done);
-                progress.Report(new($"Consultando el catálogo oficial de drivers… ({n}/{targets.Count})", n, targets.Count));
+                progress.Report(new("sources", $"Consultando el catálogo oficial: {row.Device.Name}", n, targets.Count));
             }
         }));
     }
