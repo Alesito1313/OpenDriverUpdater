@@ -11,15 +11,34 @@ Antes de instalar crea (opcionalmente) un **punto de restauración**, para poder
 
 ## ¿De dónde salen los drivers?
 
-Del **catálogo oficial de Windows Update**, a través del Agente de Windows Update (la misma API que usa Windows). Es ahí donde Intel, AMD, NVIDIA, Realtek, Qualcomm, etc. publican sus drivers **firmados y certificados (WHQL)** para cada modelo de hardware.
+Cada dispositivo se compara con **tres fuentes oficiales**:
 
-Ventajas de esta fuente:
+| Fuente | Qué aporta |
+|---|---|
+| **Windows Update** | Los drivers que Microsoft ofrece automáticamente a tu PC (incluidos los opcionales). |
+| **Catálogo de Microsoft Update** (`catalog.update.microsoft.com`) | Todas las versiones que cada fabricante (Intel, AMD, NVIDIA, Realtek, Qualcomm...) ha publicado para el *Hardware ID* exacto de tu dispositivo, aunque Windows Update no te las ofrezca. |
+| **Web oficial de NVIDIA** | La última versión publicada por NVIDIA para tu tarjeta gráfica, que suele salir antes que en Windows Update. |
 
-- Los drivers son oficiales y están firmados: nada de webs de terceros ni ejecutables dudosos.
-- Microsoft empareja cada driver con el *Hardware ID* exacto de tu dispositivo, así que no se instala nada incompatible.
-- No hace falta mantener una base de datos propia.
+La lista muestra **todos** los dispositivos con:
 
-Limitación honesta: algunos fabricantes (sobre todo **NVIDIA y AMD en tarjetas gráficas**) publican primero en su web y suben a Windows Update más tarde, por lo que la versión de su web puede ser más nueva. Ver la *hoja de ruta*.
+- versión y fecha del driver **instalado**,
+- versión y fecha de la **última versión oficial** encontrada y su fuente,
+- el **estado**: actualización disponible, sin driver, driver del fabricante disponible (tienes el genérico de Microsoft), al día, o sin datos.
+
+Solo se marcan por defecto las actualizaciones claras (mismo fabricante y coincidencia exacta con tu modelo). Las coincidencias **genéricas** (encontradas por un ID menos específico) se muestran, pero tú decides si instalarlas.
+
+Doble clic en una fila muestra los detalles (todas las versiones encontradas, Hardware IDs, enlace oficial). **Exportar informe** guarda un .txt en el escritorio con todo el análisis, útil para reportar problemas.
+
+### Cómo se instala cada fuente
+
+- **Windows Update**: con el propio motor de Windows Update.
+- **Catálogo**: se descarga el paquete `.cab` oficial, se extrae y se instala con `pnputil /add-driver /install`, la herramienta de Windows.
+- **NVIDIA**: se descarga el instalador oficial y se abre el asistente de NVIDIA.
+
+### Limitaciones conocidas
+
+- AMD (gráficas Radeon) e Intel no tienen un servicio público para consultar su última versión; para ellos se usa el Catálogo de Microsoft, donde publican con algo de retraso.
+- Los drivers de portátiles adaptados por el fabricante del equipo (Dell, HP, Lenovo...) pueden no coincidir con la versión genérica del fabricante del chip.
 
 ## Requisitos
 
@@ -52,14 +71,20 @@ src/OpenDriverUpdater/
 ├── app.manifest                    Pide permisos de administrador
 ├── Models/Models.cs                Driver instalado, actualización, resultado
 └── Services/
-    ├── DriverScanner.cs            Lee los drivers instalados (WMI: Win32_PnPSignedDriver)
-    ├── WindowsUpdateService.cs     Busca, descarga e instala drivers (Windows Update Agent)
+    ├── DeviceScanner.cs            Dispositivos, drivers instalados y Hardware IDs (WMI)
+    ├── UpdateEngine.cs             Consulta las fuentes y compara versiones
+    ├── WindowsUpdateService.cs     Windows Update Agent
+    ├── CatalogService.cs           Catálogo de Microsoft Update (búsqueda, descarga, pnputil)
+    ├── NvidiaService.cs            Última versión en la web de NVIDIA
+    ├── VersionUtil.cs              Comparación de versiones
+    ├── Http.cs                     Descargas y reintentos
     └── SystemActions.cs            Punto de restauración y reinicio
 ```
 
 ## Hoja de ruta (ideas para contribuir)
 
-- [ ] Fuentes adicionales por fabricante (APIs de NVIDIA / AMD / Intel) para detectar versiones más nuevas que las de Windows Update
+- [x] Catálogo de Microsoft Update y web de NVIDIA como fuentes adicionales
+- [ ] Fuentes directas de AMD e Intel
 - [ ] Copia de seguridad de los drivers actuales (`pnputil /export-driver`) antes de actualizar
 - [ ] Ocultar un driver para que no se vuelva a ofrecer
 - [ ] Botón de cancelar durante la descarga
