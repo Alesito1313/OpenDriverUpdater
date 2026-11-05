@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Management;
 using System.Text.RegularExpressions;
+using Microsoft.Win32;
 
 namespace OpenDriverUpdater.Core
 {
@@ -58,7 +59,8 @@ namespace OpenDriverUpdater.Core
                         Class = cls.Length > 0 ? cls : Str(mo, "PNPClass"),
                         Manufacturer = maker.Length > 0 ? maker : Str(mo, "Manufacturer"),
                         Provider = drv != null ? drv["DriverProviderName"] : "",
-                        Version = missing ? "" : version,
+                        // tras actualizar sin reiniciar WMI sigue un rato con la version vieja
+                        Version = missing ? "" : CurrentVersion(id) ?? version,
                         Date = missing || drv == null ? null : WmiDate(drv["DriverDate"]),
                         Inf = drv != null ? drv["InfName"] : "",
                         Error = error,
@@ -71,10 +73,22 @@ namespace OpenDriverUpdater.Core
             return list;
         }
 
-        // version del driver que tiene ahora un dispositivo (para comprobar si una instalacion funciono)
+        // Version del driver que tiene ahora un dispositivo (para comprobar si una instalacion funciono).
+        // Se lee del registro: Win32_PnPSignedDriver tarda varios minutos en enterarse del cambio.
         public static string CurrentVersion(string deviceId)
         {
             if (string.IsNullOrEmpty(deviceId)) return null;
+            try
+            {
+                using (var dev = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\" + deviceId))
+                {
+                    if (dev?.GetValue("Driver") is string driverKey)
+                        using (var cls = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Class\" + driverKey))
+                            if (cls?.GetValue("DriverVersion") is string v && v.Length > 0) return v;
+                }
+            }
+            catch { }
+
             try
             {
                 var id = deviceId.Replace("\\", "\\\\").Replace("'", "\\'");
