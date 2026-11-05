@@ -211,11 +211,18 @@ namespace OpenDriverUpdater.Core
             var c = row.Latest;
             try
             {
+                // nunca dos instalaciones de drivers a la vez
+                if (SystemTools.InstallsPending())
+                {
+                    progress.Report(Lang.Get("waitingInstalls"));
+                    await SystemTools.WaitForPendingInstalls(TimeSpan.FromMinutes(10), ct);
+                }
+
                 switch (c.Source)
                 {
                     case Source.WindowsUpdate: return await Task.Run(() => wu.Install(c, progress), ct);
                     case Source.Catalog: return await Catalog.Install(c, progress, ct);
-                    default: return await Nvidia.Install(c, progress, ct);
+                    default: return await Nvidia.Install(row.Device, c, progress, ct);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

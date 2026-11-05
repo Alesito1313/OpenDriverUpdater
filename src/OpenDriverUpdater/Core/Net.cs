@@ -76,8 +76,14 @@ namespace OpenDriverUpdater.Core
             {
                 r.EnsureSuccessStatusCode();
                 long total = r.Content.Headers.ContentLength ?? 0;
+
+                // ya bajado entero en un intento anterior (el de NVIDIA pesa casi 1 GB)
+                if (total > 0 && File.Exists(path) && new FileInfo(path).Length == total) return;
+
+                // se baja a .part y se renombra al acabar, asi nunca queda un archivo a medias con el nombre bueno
+                var part = path + ".part";
                 using (var src = await r.Content.ReadAsStreamAsync())
-                using (var dst = File.Create(path))
+                using (var dst = File.Create(part))
                 {
                     var buf = new byte[81920];
                     long done = 0;
@@ -96,6 +102,9 @@ namespace OpenDriverUpdater.Core
                         }
                     }
                 }
+                if (total > 0 && new FileInfo(part).Length != total) throw new IOException(Lang.Get("downloadIncomplete"));
+                if (File.Exists(path)) File.Delete(path);
+                File.Move(part, path);
             }
         }
 

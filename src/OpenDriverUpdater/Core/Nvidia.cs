@@ -74,7 +74,7 @@ namespace OpenDriverUpdater.Core
         }
 
         // se descarga el instalador oficial y se abre su asistente
-        public static async Task<InstallResult> Install(Candidate c, IProgress<string> progress, CancellationToken ct)
+        public static async Task<InstallResult> Install(Device d, Candidate c, IProgress<string> progress, CancellationToken ct)
         {
             if (c.DownloadUrl == null) return InstallResult.Fail(Lang.Get("nvidiaNoLink"));
 
@@ -86,13 +86,19 @@ namespace OpenDriverUpdater.Core
             await Net.Download(c.DownloadUrl, file, progress, Lang.Get("downloading", c.Title), ct);
 
             progress.Report(Lang.Get("nvidiaWizard"));
-            using (var p = Process.Start(new ProcessStartInfo(file) { UseShellExecute = true }))
-            {
-                await Net.WaitForExit(p, ct);
-                return p.ExitCode == 0
-                    ? new InstallResult(InstallState.Ok, Lang.Get("nvidiaDone"), reboot: true)
-                    : InstallResult.Fail(Lang.Get("nvidiaExit", p.ExitCode));
-            }
+            int code = await SystemTools.RunInstaller(file, null, ct);
+
+            // El codigo de salida no es fiable: la ventana de NVIDIA puede cerrarse con error
+            // y el driver quedar instalado igualmente. Lo que cuenta es la version que tiene ahora la grafica.
+            progress.Report(Lang.Get("checkingDriver"));
+            await SystemTools.WaitForPendingInstalls(TimeSpan.FromMinutes(5), ct);
+            var now = Versions.NvidiaFromWindows(DeviceScanner.CurrentVersion(d.Id));
+            if (now != null && Versions.Compare(now, c.Version) >= 0)
+                return new InstallResult(InstallState.Ok, Lang.Get("nvidiaInstalled", now));
+
+            return code == 0
+                ? new InstallResult(InstallState.Ok, Lang.Get("installedReboot"), reboot: true)
+                : InstallResult.Fail(Lang.Get("nvidiaExit", code));
         }
 
         static bool IsDch()

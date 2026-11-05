@@ -71,6 +71,21 @@ namespace OpenDriverUpdater.Core
             return list;
         }
 
+        // version del driver que tiene ahora un dispositivo (para comprobar si una instalacion funciono)
+        public static string CurrentVersion(string deviceId)
+        {
+            if (string.IsNullOrEmpty(deviceId)) return null;
+            try
+            {
+                var id = deviceId.Replace("\\", "\\\\").Replace("'", "\\'");
+                using (var s = new ManagementObjectSearcher("SELECT DriverVersion FROM Win32_PnPSignedDriver WHERE DeviceID = '" + id + "'"))
+                    foreach (ManagementBaseObject mo in s.Get())
+                        return Str(mo, "DriverVersion");
+            }
+            catch { }
+            return null;
+        }
+
         // Solo IDs que identifican fabricante + modelo (VEN/DEV, VID/PID, ACPI de fabricante),
         // sin la revision. Los genericos de Windows (clases, ACPI\PNPxxxx) no sirven para buscar.
         static List<string> PickSearchIds(IEnumerable<string> ids)
